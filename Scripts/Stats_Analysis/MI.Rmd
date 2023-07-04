@@ -1,0 +1,649 @@
+---
+title: "Multiple Imputation"
+author: "Xiaonan Liu"
+date: "2023-04-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include=TRUE, echo=FALSE)
+
+library(yaml)
+library(here)
+library(tidyr)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(magrittr)
+library(svglite)
+library(rsvg)
+library(png)
+library(dplyr)
+library(Rcpp)
+library(etm)
+library(readr)
+library(tibble)
+library(Publish)
+library(rsample)
+library(arsenal)
+library(survival)
+library(survminer)
+library(forestplot)
+library(pander)
+library(naniar)
+library(boot)
+library(forcats)
+library(mice)
+library(lattice)
+
+panderOptions('table.alignment.default', function(df)
+    ifelse(sapply(df, is.numeric), 'right', 'left'))
+panderOptions('table.split.table', Inf)
+panderOptions('big.mark', ",")
+panderOptions('keep.trailing.zeros', TRUE)
+panderOptions('missing', '')
+
+
+# Specify the markdown format for knitr tables, otherwise they're not compatible with kableExtra
+#options(knitr.kable.NA='', knitr.table.format = "html")
+#options(kableExtra.auto_format = FALSE)
+# Set the root directory to the project directory (otherwise knitr works in the directory of the Rmd file by default)
+
+knitr::opts_knit$set(root.dir = here::here())
+
+my_controls <- tableby.control(
+    test = F,
+    total = F,
+    #numeric.test = "kwt", cat.test = "chisq",
+    numeric.stats = c("meansd", "range", "Nmiss"), 
+    cat.stats = c("countpct", "Nmiss"),
+    stats.labels = list(
+      meansd = "Mean (SD)",
+      #medianq1q3 = "Median (IQR)",
+      range = "Min - Max",
+      Nmiss = "Missing",
+      Npct="N (Pct)"
+    ),
+    digits = 2L
+  )
+
+
+# Load the project config file for filepaths etc
+config = yaml.load_file(here::here("./config.yml"))
+source(here::here(config$functions))
+
+derived_path=config$data$derived
+
+HESonly_dem<-readRDS(here::here(file.path(derived_path,"HESonly_dem.rds")))
+HESGP_dem<-readRDS(here::here(file.path(derived_path,"HESGP_dem.rds")))
+
+HESonly_PD<-readRDS(here::here(file.path(derived_path,"HESonly_PD.rds")))
+HESGP_PD<-readRDS(here::here(file.path(derived_path,"HESGP_PD.rds")))
+
+HESonly_diab<-readRDS(here::here(file.path(derived_path,"HESonly_diab.rds")))
+HESGP_diab<-readRDS(here::here(file.path(derived_path,"HESGP_diab.rds")))
+
+```
+
+
+# PD 
+
+MI for HES only first. 
+
+```{r}
+# Use TEU_ethnicgrp for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_PD","TEU_Smo_Status","HESDth_PD_time", "HESDth_PD_status")
+
+HESonlyMI=HESonly_PD[,MI_vars]
+
+# Check missingness
+HESonlyMI%>%miss_var_summary()%>%filter(n_miss!=0)
+
+missing_var=HESonlyMI%>%miss_var_summary()%>%filter(n_miss!=0)%>%pull(variable)
+
+# Check correlation
+corr=mixed_assoc(HESonlyMI)
+# See which correlation above 0.6
+corr%>%filter(x!=y&assoc>0.6)%>%View()
+# none
+```
+
+
+```{r MI}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESonlyMI,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+Imp_PD<-mice(HESonlyMI,pred=pred,maxit = 20,seed = 100,m=10)
+#test<-mice(HESonlyMI,pred=pred,maxit = 2,seed = 100,m=2)
+```
+
+```{r}
+
+## 1. Assess Convergence 
+plot(Imp_PD)
+
+## 2. Compare summary stats between observed and imputed (or completed) data
+dx_list=MI_compare(MI_data=HESonly_PD,imp1=Imp_PD,missing_var=missing_var)
+
+```
+
+```{r post derivation}
+long1 <- complete(Imp_PD,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESonly_PD<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESonly_PD,file=file.path(config$data$derived,'HESonlyMI_PD_derived.rds'))
+```
+
+MI for HES+GP.
+
+```{r}
+# Use TEU_ethnicgrp for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_PD","TEU_Smo_Status","HESDthGP_PD_time","HESDthGP_PD_status")
+
+HESGPMI=HESGP_PD[,MI_vars]
+
+missing_var=HESGPMI%>%miss_var_summary()%>%filter(n_miss!=0)%>%pull(variable)
+
+```
+
+
+```{r MI}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESGPMI,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+ImpGP_PD<-mice(HESGPMI,pred=pred,maxit = 20,seed = 100,m=10)
+
+```
+
+```{r}
+
+## 1. Assess Convergence 
+plot(ImpGP_PD)
+
+## 2. Compare summary stats between observed and imputed (or completed) data
+dx_list=MI_compare(MI_data=HESGP_PD,imp1=ImpGP_PD,missing_var=missing_var)
+
+```
+
+```{r post derivation}
+long1 <- complete(ImpGP_PD,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESGP_PD<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESGP_PD,file=file.path(config$data$derived,'HESGPMI_PD_derived.rds'))
+```
+
+# T2D 
+
+```{r Temp change level name for foresplot T2D}
+levels(HESonly_diab$Estw_gestational)<-c("No ","Yes ")
+levels(HESonly_diab$TEU_evidenceHTN)<-c("No  ","Yes  ")
+
+levels(HESGP_diab$Estw_gestational)<-c("No ","Yes ")
+levels(HESGP_diab$TEU_evidenceHTN)<-c("No  ","Yes  ")
+
+```
+
+## Male 
+
+MI for HES only males.
+
+```{r}
+# Use TEU_ethnicgrp and BSM_BMI for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","TownsendDepInd","TEU_FaH_diab","BSM_WaistCirc","BSM_BMI","Dem_InPhA_WHO","TEU_evidenceHTN","HESDth_T2D_time", "HESDth_T2D_status")
+
+HESonlyMI_Males=HESonly_diab%>%filter(BaC_Sex=="Male")%>%select(all_of(MI_vars))
+
+# Check missingness
+HESonlyMI_Males%>%miss_var_summary()%>%filter(n_miss!=0)
+
+missing_var=HESonlyMI_Males%>%miss_var_summary()%>%filter(n_miss!=0)%>%pull(variable)
+
+# Check correlation
+corr=mixed_assoc(HESonlyMI_Males)
+# See which correlation above 0.6
+corr%>%filter(x!=y&assoc>0.6)%>%View()
+# High correlation between BMI and Waist circ
+```
+
+
+```{r MI}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESonlyMI_Males,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+Imp_males<-mice(HESonlyMI_Males,pred=pred,maxit = 20,seed = 100,m=10)
+
+```
+
+```{r checking diagnosis}
+
+## 1. Assess Convergence 
+plot(Imp_males)
+
+## 2. Compare summary stats between observed and imputed (or completed) data
+dx_list=MI_compare(MI_data=HESonlyMI_Males,imp1=Imp_males,missing_var=missing_var)
+
+```
+
+
+```{r post derivation}
+long1 <- complete(Imp_males,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Dem_BSM_BMIcat=factor(cut(BSM_BMI,
+                       breaks = c(0, 25, 30, 200),
+                       right = FALSE),levels=c("[0,25)", "[25,30)", "[30,200)"),labels= c("Underweight/Normal", "Overweight", "Obese")),
+    
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESonlymales<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESonlymales,file=file.path(config$data$derived,'HESonlyMI_males_derived.rds'))
+```
+
+MI for HES+GP males.
+
+```{r}
+# Use TEU_ethnicgrp and BSM_BMI for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","TownsendDepInd","TEU_FaH_diab","BSM_WaistCirc","BSM_BMI","Dem_InPhA_WHO","TEU_evidenceHTN","HESDthGP_T2D_time", "HESDthGP_T2D_status")
+
+HESGPMI_Males=HESGP_diab%>%filter(BaC_Sex=="Male")%>%select(all_of(MI_vars))
+
+```
+
+
+```{r MI}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESGPMI_Males,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+ImpGP_males<-mice(HESGPMI_Males,pred=pred,maxit = 20,seed = 100,m=10)
+
+```
+
+```{r}
+
+## 1. Assess Convergence 
+plot(ImpGP_males)
+
+## 2. Compare summary stats between observed and imputed (or completed) data
+dx_list=MI_compare(MI_data=HESGPMI_Males,imp1=ImpGP_males,missing_var=missing_var)
+
+```
+
+
+```{r post derivation}
+long1 <- complete(ImpGP_males,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Dem_BSM_BMIcat=factor(cut(BSM_BMI,
+                       breaks = c(0, 25, 30, 200),
+                       right = FALSE),levels=c("[0,25)", "[25,30)", "[30,200)"),labels= c("Underweight/Normal", "Overweight", "Obese")),
+    
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESGPmales<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESGPmales,file=file.path(config$data$derived,'HESGPMI_males_derived.rds'))
+```
+
+
+
+## Female
+
+MI for HES only females.
+
+```{r}
+# Use TEU_ethnicgrp and BSM_BMI for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","TownsendDepInd","TEU_FaH_diab","BSM_WaistCirc","BSM_BMI","Dem_InPhA_WHO","TEU_evidenceHTN","HESDth_T2D_time", "HESDth_T2D_status","Estw_gestational")
+
+HESonlyMI_Females=HESonly_diab%>%filter(BaC_Sex=="Female")%>%select(all_of(MI_vars))
+
+# Check missingness
+HESonlyMI_Females%>%miss_var_summary()%>%filter(n_miss!=0)
+
+missing_var=HESonlyMI_Females%>%miss_var_summary()%>%filter(n_miss!=0)%>%pull(variable)
+
+```
+
+
+```{r MI}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESonlyMI_Females,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+Imp_females<-mice(HESonlyMI_Females,pred=pred,maxit = 20,seed = 100,m=10)
+
+```
+
+```{r checking diagnosis}
+
+## 1. Assess Convergence 
+plot(Imp_females)
+
+## 2. Compare summary stats between observed and imputed (or completed) data
+dx_list=MI_compare(MI_data=HESonlyMI_Females,imp1=Imp_females,missing_var=missing_var)
+
+```
+
+
+```{r post derivation}
+long1 <- complete(Imp_females,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Dem_BSM_BMIcat=factor(cut(BSM_BMI,
+                       breaks = c(0, 25, 30, 200),
+                       right = FALSE),levels=c("[0,25)", "[25,30)", "[30,200)"),labels= c("Underweight/Normal", "Overweight", "Obese")),
+    
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESonlyfemales<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESonlyfemales,file=file.path(config$data$derived,'HESonlyMI_females_derived.rds'))
+```
+
+
+MI for HES+GP females.
+
+```{r}
+# Use TEU_ethnicgrp and BSM_BMI for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","TownsendDepInd","TEU_FaH_diab","BSM_WaistCirc","BSM_BMI","Dem_InPhA_WHO","TEU_evidenceHTN","HESDthGP_T2D_time", "HESDthGP_T2D_status","Estw_gestational")
+
+HESGPMI_Females=HESGP_diab%>%filter(BaC_Sex=="Female")%>%select(all_of(MI_vars))
+
+```
+
+
+```{r MI}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESGPMI_Females,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+ImpGP_females<-mice(HESGPMI_Females,pred=pred,maxit = 20,seed = 100,m=10)
+
+```
+
+```{r}
+
+## 1. Assess Convergence 
+plot(ImpGP_females)
+
+## 2. Compare summary stats between observed and imputed (or completed) data
+dx_list=MI_compare(MI_data=HESGPMI_Females,imp1=ImpGP_females,missing_var=missing_var)
+
+```
+
+```{r post derivation}
+long1 <- complete(ImpGP_females,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Dem_BSM_BMIcat=factor(cut(BSM_BMI,
+                       breaks = c(0, 25, 30, 200),
+                       right = FALSE),levels=c("[0,25)", "[25,30)", "[30,200)"),labels= c("Underweight/Normal", "Overweight", "Obese")),
+    
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESGPfemales<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESGPfemales,file=file.path(config$data$derived,'HESGPMI_females_derived.rds'))
+```
+
+
+# Dementia
+
+```{r Temp change level names for foresplot}
+# So stupid... need to have unique level names for forestplot to work...
+levels(HESonly_dem$TEU_Alc_Freq)[1]<-"Never "
+levels(HESonly_dem$Dem_Depression)<-c("No ","Yes ")
+levels(HESonly_dem$Dem_diab)<-c("No  ","Yes  ")
+levels(HESonly_dem$Dem_Depression)<-c("No   ","Yes   ")
+levels(HESonly_dem$Dem_HearingLoss)<-c("No    ","Yes    ")
+levels(HESonly_dem$TEU_evidenceHTN)<-c("No     ","Yes     ")
+levels(HESonly_dem$Dem_SocialIso)<-c("No      ","Yes      ")
+
+
+levels(HESGP_dem$TEU_Alc_Freq)[1]<-"Never "
+levels(HESGP_dem$Dem_Depression)<-c("No ","Yes ")
+levels(HESGP_dem$Dem_diab)<-c("No  ","Yes  ")
+levels(HESGP_dem$Dem_Depression)<-c("No   ","Yes   ")
+levels(HESGP_dem$Dem_HearingLoss)<-c("No    ","Yes    ")
+levels(HESGP_dem$TEU_evidenceHTN)<-c("No     ","Yes     ")
+levels(HESGP_dem$Dem_SocialIso)<-c("No      ","Yes      ")
+
+```
+
+MI for HES only first. Note: We need to remove ~5% missing values of APOE carrier before MI  because those people were missing either did not have genetic data available or were outliers for missingness/heterozyg.
+
+```{r}
+# Use TEU_ethnicgrp and BSM_BMI for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_dem","TEU_APOE_e4_carrier","Dem_Edu_Qual","TEU_Alc_Freq","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","TEU_evidenceHTN","Dem_SocialIso","BSM_BMI","HESDth_Dem_time", "HESDth_Dem_status")
+
+HESonlyMI=HESonly_dem[,MI_vars]%>%
+  # remove missing status of APOE carrier
+  filter(!is.na(TEU_APOE_e4_carrier))
+
+# Check missingness
+HESonlyMI%>%miss_var_summary()%>%filter(n_miss!=0)
+
+missing_var=HESonlyMI%>%miss_var_summary()%>%filter(n_miss!=0)%>%pull(variable)
+
+# Check correlation
+corr=mixed_assoc(HESonlyMI)
+# See which correlation above 0.6
+corr%>%filter(x!=y&assoc>0.6)%>%View()
+# none
+```
+
+
+```{r MI}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESonlyMI,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+Imp_dem<-mice(HESonlyMI,pred=pred,maxit = 20,seed = 100,m=10)
+
+```
+
+```{r}
+
+## 1. Assess Convergence 
+plot(Imp_dem)
+
+## 2. Compare summary stats between observed and imputed (or completed) data
+dx_list=MI_compare(MI_data=HESonly_dem,imp1=Imp_dem,missing_var=missing_var)
+
+```
+
+```{r post derivation}
+long1 <- complete(Imp_dem,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Dem_BSM_BMIcat=factor(cut(BSM_BMI,
+                       breaks = c(0, 25, 30, 200),
+                       right = FALSE),levels=c("[0,25)", "[25,30)", "[30,200)"),labels= c("Underweight/Normal", "Overweight", "Obese")),
+    
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESonly_dem<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESonly_dem,file=file.path(config$data$derived,'HESonlyMI_dem_derived.rds'))
+```
+
+
+MI for HES+GP. Same note on APOE.
+
+```{r}
+# Use TEU_ethnicgrp and BSM_BMI for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_dem","TEU_APOE_e4_carrier","Dem_Edu_Qual","TEU_Alc_Freq","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","TEU_evidenceHTN","Dem_SocialIso","BSM_BMI","HESDthGP_Dem_time", "HESDthGP_Dem_status")
+
+HESGPMI=HESGP_dem[,MI_vars]%>%
+  # remove missing status of APOE carrier
+  filter(!is.na(TEU_APOE_e4_carrier))
+
+missing_var=HESGPMI%>%miss_var_summary()%>%filter(n_miss!=0)%>%pull(variable)
+
+```
+
+
+```{r MI}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESGPMI,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+ImpGP_dem<-mice(HESGPMI,pred=pred,maxit = 20,seed = 100,m=10)
+
+```
+
+
+```{r}
+
+## 1. Assess Convergence 
+plot(ImpGP_dem)
+
+## 2. Compare summary stats between observed and imputed (or completed) data
+dx_list=MI_compare(MI_data=HESGP_dem,imp1=ImpGP_dem,missing_var=missing_var)
+
+```
+
+```{r post derivation}
+long1 <- complete(ImpGP_dem,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Dem_BSM_BMIcat=factor(cut(BSM_BMI,
+                       breaks = c(0, 25, 30, 200),
+                       right = FALSE),levels=c("[0,25)", "[25,30)", "[30,200)"),labels= c("Underweight/Normal", "Overweight", "Obese")),
+    
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESGP_dem<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESGP_dem,file=file.path(config$data$derived,'HESGPMI_dem_derived.rds'))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

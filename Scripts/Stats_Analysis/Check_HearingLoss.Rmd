@@ -1,0 +1,205 @@
+---
+title: "Exploration of full follow-up on hearing loss"
+author: "Xiaonan Liu"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  word_document:
+      fig_width: 8
+      fig_height: 6
+      reference_docx: "K:/TEU/TEU_Guides/TEU_DocStyle_Rmd_2020.dotx"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include=TRUE, echo=FALSE)
+
+library(yaml)
+library(here)
+library(tidyr)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(magrittr)
+library(svglite)
+library(rsvg)
+library(png)
+library(dplyr)
+library(Rcpp)
+library(etm)
+library(readr)
+library(tibble)
+library(Publish)
+library(rsample)
+library(arsenal)
+library(survival)
+library(survminer)
+library(forestplot)
+library(pander)
+library(naniar)
+library(boot)
+library(forcats)
+library(mice)
+
+panderOptions('table.alignment.default', function(df)
+    ifelse(sapply(df, is.numeric), 'right', 'left'))
+panderOptions('table.split.table', Inf)
+panderOptions('big.mark', ",")
+panderOptions('keep.trailing.zeros', TRUE)
+panderOptions('missing', '')
+
+
+# Specify the markdown format for knitr tables, otherwise they're not compatible with kableExtra
+#options(knitr.kable.NA='', knitr.table.format = "html")
+#options(kableExtra.auto_format = FALSE)
+# Set the root directory to the project directory (otherwise knitr works in the directory of the Rmd file by default)
+
+knitr::opts_knit$set(root.dir = here::here())
+
+# Load the project config file for filepaths etc
+config = yaml.load_file(here::here("./config.yml"))
+source(here::here(config$functions))
+
+derived_path=config$data$derived
+
+HESonly_demMI<-readRDS(here::here(file.path(derived_path,"HESonlyMI_dem_FullFU.rds")))
+
+HESonly_dem<-readRDS(here::here(file.path(derived_path,"HESonly_dem.rds")))
+
+```
+
+```{r load pretty names,include=FALSE}
+
+source(here::here(file.path(config$scripts$cleaning, "dataset_generator.R")))
+
+pretty_func <- pretty_switch(field_definitions=c(TEU_SPECS$HESvsGP_Diab,TEU_SPECS$HESvsGP_PD,TEU_SPECS$HESvsGP_dementia), return_type = "function")
+pretty_names <- pretty_switch(field_definitions=c(TEU_SPECS$HESvsGP_Diab,TEU_SPECS$HESvsGP_PD,TEU_SPECS$HESvsGP_dementia), return_type="list")
+
+```
+
+
+We want to explore among the HES only population for dementia (i.e. ~45% cohort), what are the HR of hearing loss if we have the full follow-up.
+
+First we derive HES/Dth diagnosis of dementia but with full follow-up period. 
+
+```{r}
+
+HESonly_full<-HESonly_dem%>%
+        mutate(TEU_Dem_status=case_when(
+          !is.na(HESDth_Dem_eventdate) & HESDth_Dem_eventdate<=HESDth_Dem_censordate ~ 1,
+          is.na(HESDth_Dem_eventdate) |(!is.na(HESDth_Dem_eventdate)&HESDth_Dem_eventdate>HESDth_Dem_censordate) ~ 0))%>%
+  mutate(TEU_Dem_time=case_when(
+          TEU_Dem_status==0 ~ as.numeric(difftime(HESDth_Dem_censordate, Rec_DateAssess, unit='days'))/365.25,
+          TEU_Dem_status==1 ~ as.numeric(difftime(HESDth_Dem_eventdate, Rec_DateAssess, unit='days'))/365.25))
+      
+
+```
+
+# MI
+
+```{r,eval=FALSE}
+# Use TEU_ethnicgrp and BSM_BMI for imputation.
+
+MI_vars=c("ID","TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_dem","TEU_APOE_e4_carrier","Dem_Edu_Qual","TEU_Alc_Freq","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","TEU_evidenceHTN","Dem_SocialIso","BSM_BMI","TEU_Dem_time", "TEU_Dem_status")
+
+# No missing APOE carrier
+HESonlyMI=HESonly_full[,MI_vars]
+
+# Check missingness
+HESonlyMI%>%miss_var_summary()%>%filter(n_miss!=0)
+
+missing_var=HESonlyMI%>%miss_var_summary()%>%filter(n_miss!=0)%>%pull(variable)
+
+# Check correlation
+corr=mixed_assoc(HESonlyMI)
+# See which correlation above 0.6
+corr%>%filter(x!=y&assoc>0.6)%>%View()
+# none
+```
+
+```{r MI,eval=FALSE}
+# Create Imputations (iter=20, M=10)
+
+# Using default imputation method based on variable type
+
+# Create initial predictor matrix for customization
+ini <- mice(HESonlyMI,maxit = 0,print=FALSE)
+pred <- ini$predictorMatrix
+
+# Remove predictors: ID.
+pred[,c("ID")] <- 0
+
+# Actual running MI with the customised prediction matrix
+Imp_dem<-mice(HESonlyMI,pred=pred,maxit = 20,seed = 100,m=10)
+
+## 1. Assess Convergence 
+plot(Imp_dem)
+```
+
+
+```{r post derivation,eval=FALSE}
+long1 <- complete(Imp_dem,"long",include = TRUE) # important to put 'include = TRUE'
+
+comp_long1<-long1%>%
+  mutate(
+    Dem_BSM_BMIcat=factor(cut(BSM_BMI,
+                       breaks = c(0, 25, 30, 200),
+                       right = FALSE),levels=c("[0,25)", "[25,30)", "[30,200)"),labels= c("Underweight/Normal", "Overweight", "Obese")),
+    
+    Ethnicity=factor(case_when(TEU_ethnicgrp=="White" ~ "White",
+                                     is.na(TEU_ethnicgrp) ~ NA_character_,
+                                     TRUE~"Other ethnicity"),levels=c("White","Other ethnicity")))
+
+
+comp_long1_HESonly_dem<-as.mids(comp_long1)
+
+saveRDS(comp_long1_HESonly_dem,file=file.path(config$data$derived,'HESonlyMI_dem_FullFU.rds'))
+```
+
+```{r}
+Dem_vars=c("TEU_BaC_AgeAtRec","Ethnicity","BaC_Sex","TownsendDepInd","TEU_FaH_dem","TEU_APOE_e4_carrier","Dem_Edu_Qual","TEU_Alc_Freq","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","TEU_evidenceHTN","Dem_SocialIso","Dem_BSM_BMIcat")
+
+# HES only
+
+HESonly_formula <- paste0("Surv(TEU_Dem_time, TEU_Dem_status)~ ", paste(Dem_vars, collapse="+"))
+
+# For some weird reason, I have to specify as.formula here below otherwise it won't work.
+HESonly_Cox<-with(HESonly_demMI, coxph(as.formula(HESonly_formula)))
+
+HESonly_Cox_df<-printMIresults(df=HESonly_demMI$data,varlist = Dem_vars,modeloutput = summary(pool(HESonly_Cox)),onecol = TRUE,IDcol=FALSE,forplot = FALSE,pretty_names = pretty_names)
+
+
+```
+
+```{r dem Table}
+
+pander(HESonly_Cox_df,caption=paste0("Results of Cox models of dementia obtained using HES only and full follow-up (N= ",nrow(HESonly_demMI$data), ")"))
+
+```
+
+# Complete case
+
+```{r}
+
+vars=c("TEU_BaC_AgeAtRec","Ethnicity","BaC_Sex","TownsendDepInd","TEU_FaH_dem","TEU_APOE_e4_carrier","Dem_Edu_Qual","TEU_Alc_Freq","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","TEU_evidenceHTN","Dem_SocialIso","Dem_BSM_BMIcat")
+
+formula <- as.formula(paste0("Surv(TEU_Dem_time, TEU_Dem_status)~ ", paste(vars, collapse="+")))
+
+model<-coxph(formula,data=HESonly_full)
+
+model_df<-printcoxresults(df=HESonly_full,varlist = vars,modeloutput = model,onecol = TRUE,IDcol=FALSE,forplot = FALSE,pretty_names=pretty_names)
+
+pander(model_df,caption=paste0("Results of Cox models of dementia obtained using HES only dementia population with full follow-up (N= ",model$n,")."))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,43 @@
+digraph dot {{
+  graph[layout=dot, rankdir=UD]
+  
+  # define the global styles of the nodes. We can override these in box if we wish
+  node [shape = rectangle, style = filled, fillcolor = Azure, fontname=Calibri];
+  wholepop [label='{label1}']
+  agerange [label='{label2}']
+  GP [label='{label3}']
+  APOE [label='{label4}']
+  notsick_1 [label='{label5}']
+  notsick_GP [label='{label6}']
+  
+  ex_agerange [label='{label7}']
+  ex_GP [label='{label8}']
+  ex_APOE [label='{label9}']
+  ex_sick_1 [label='{label10}']
+  ex_sick_GP [label='{label11}']
+  
+  node [shape=point, width=0, height=0]
+  i1 i2 i3 i4 i5
+
+  
+  wholepop -> i1 [arrowhead='none']
+  i1 -> agerange 
+  agerange -> i2 [arrowhead='none']
+  i2 -> GP 
+  GP -> i3 [arrowhead='none']
+  i3 -> APOE
+  APOE -> i4 [arrowhead='none']
+  i4 -> notsick_1
+  notsick_1 -> i5 [arrowhead='none']
+  i5 -> notsick_GP
+  
+  edge [arrowhead='none']
+  i1 -> ex_agerange; {{rank=same i1 ex_agerange}}
+  i2 -> ex_GP; {{rank=same i2 ex_GP}}
+  i3 -> ex_APOE; {{rank=same i3 ex_APOE}}
+  i4 -> ex_sick_1; {{rank=same i4 ex_sick_1}}
+  i5 -> ex_sick_GP; {{rank=same i5 ex_sick_GP}}
+  
+  }}
+
+  

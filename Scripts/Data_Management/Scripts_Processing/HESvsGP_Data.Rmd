@@ -1,0 +1,309 @@
+---
+title: "HES vs GP: Data derivation"
+author: "Xiaonan Liu"
+date: "2023-01-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include=TRUE, echo=FALSE)
+
+library(yaml)
+library(here)
+library(tidyr)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(magrittr)
+library(svglite)
+library(rsvg)
+library(png)
+library(dplyr)
+library(Rcpp)
+library(etm)
+library(readr)
+library(tibble)
+library(Publish)
+library(rsample)
+
+# Specify the markdown format for knitr tables, otherwise they're not compatible with kableExtra
+#options(knitr.kable.NA='', knitr.table.format = "html")
+#options(kableExtra.auto_format = FALSE)
+# Set the root directory to the project directory (otherwise knitr works in the directory of the Rmd file by default)
+
+knitr::opts_knit$set(root.dir = here::here())
+
+# Load the project config file for filepaths etc
+config = yaml.load_file(here::here("./config.yml"))
+source(here::here(config$functions))
+
+
+```
+
+# Type 2 diabetes
+
+```{r derive HES only data,eval=FALSE,include=FALSE}
+
+source(file.path(config$scripts$cleaning, "dataset_generator.R"))
+
+exclusions <- function(data) {
+  
+  excl$initial <<- nrow(data)
+
+  # Age
+  data<-data%>%filter(!(!is.na(TEU_BaC_AgeAtRec) & TEU_BaC_AgeAtRec<40 | TEU_BaC_AgeAtRec>=70))
+  excl$agewithin<<-nrow(data)
+  
+  # Exclude ppl without GP data or left GP before/on baseline
+  data<-data%>%filter(!is.na(TEU_PC_ind) & T2D_censordate>Rec_DateAssess)
+  excl$GP<<-nrow(data)
+  
+  # Exclude prevalent diab (Eastwood2016 + HES) based on self-report/HES
+  data <- data[data$TEU_diab_excl%in%c("Diabetes unlikely","Possible gestational diabetes"),]
+  excl$nodiab_1 <<- nrow(data)
+  
+  # Exclude extra prevalent diab based on GP data (clinical and scripts)
+  #data <- data%>%filter(TEU_PC_diab_prev==0 & TEU_PCmeds_diab_prev==0)
+  #excl$nodiab_GP <<- nrow(data)
+
+  return(data)
+}
+
+excl <- list(initial=0)
+
+HESonly_diab <-
+  #evalWithMemoization(
+    derive_variables(
+      database = config$data$database,
+      field_definitions = TEU_SPECS$HESvsGP_Diab,
+      exclusions = exclusions
+    #),
+    #key = c(TEU_SPECS$BrCa_PRS, exclusions)
+  )
+
+pretty_func <- pretty_switch(field_definitions=TEU_SPECS$T2DM_PRS, return_type = "function")
+pretty_names <- pretty_switch(field_definitions=TEU_SPECS$T2DM_PRS, return_type="list")
+
+
+backup<-data
+
+saveRDS(HESonly_diab,file = file.path(config$data$derived,"HESonly_diab.rds"))
+```
+
+```{r derive HES+GP data}
+
+# Exclude extra prevalent diab based on GP data (clinical and scripts)
+HESGP_diab <- HESonly_diab%>%filter(TEU_PC_diab_prev==0 & TEU_PCmeds_diab_prev==0)
+excl$nodiab_GP <- nrow(HESGP_diab)
+
+saveRDS(HESGP_diab,file.path(config$data$derived,"HESGP_diab.rds"))
+```
+
+
+
+
+```{r diab FC,eval=FALSE}
+# Analysis FC
+label1 <- paste0('UKB participants\\nn = ', excl$initial)
+label2 <- paste0('Participants aged between 40 and 70\\n','n = ', excl$agewithin)
+label3 <- paste0('Participants who had GP data\\nn = ', excl$GP)
+label4 <- paste0('HES only population: \n No history of diabetes in either self-reported responses','\\n',' at enrolment or hospital inpatient records \\nn = ',excl$nodiab_1)
+label5 <- paste0('HES+GP population: \n No history of diabetes in either self-reported responses','\\n',' at enrolment, hospital inpatient, or GP data \\nn = ',excl$nodiab_GP)
+
+label6 <- paste0(excl$ini-excl$agewithin,' outside the age range of [40,70) years\\l','')
+
+label7 <-paste0(excl$agewithin-excl$GP,' no GP data available\\l','')
+
+label8 <- paste0(excl$GP-excl$nodiab_1, ' prevalent type 1 and 2 diabetes \\l cases from self-report at enrolment \\l or hospital inpatient records\\l','')
+
+label9 <- paste0(excl$nodiab_1-excl$nodiab_GP, ' prevalent type 1 and 2 diabetes \\l cases from GP data\\l')
+
+gv <- read_file(file.path(config$outputs$flowcharts, "AnalysisPop.gv"))
+
+export_svg(DiagrammeR::grViz(glue(gv))
+) %>% charToRaw %>%rsvg%>%
+  #rsvg(width = 638, height = 410) %>%
+  png::writePNG(file.path(config$outputs$figures, "diab_excl.png"))
+
+```
+
+
+# Parkinson's Disease
+
+```{r derive-data,eval=FALSE,include=FALSE}
+
+source(file.path(config$scripts$cleaning, "dataset_generator.R"))
+
+exclusions <- function(data) {
+  
+  excl$initial <<- nrow(data)
+
+  # Age
+  data<-data%>%filter(!(!is.na(TEU_BaC_AgeAtRec) & TEU_BaC_AgeAtRec<40 | TEU_BaC_AgeAtRec>=70))
+  excl$agewithin<<-nrow(data)
+  
+  # Exclude ppl without GP data or left GP before/on baseline
+  data<-data%>%filter(!is.na(TEU_PC_ind) & PD_censordate>Rec_DateAssess)
+  excl$GP<<-nrow(data)
+  
+  # Exclude prevalent based on self-report/HES
+  data <- data%>%filter(is.na(TEU_VeI_PD) & TEU_HES_PD_prev=="No")
+  excl$nodiab_1 <<- nrow(data)
+  
+  # Exclude extra prevalent based on GP data (clinical and scripts)
+  #data <- data%>%filter(TEU_PC_PD_prev==0 & TEU_PCmeds_PD_prev==0)
+  #excl$nodiab_GP <<- nrow(data)
+
+  return(data)
+}
+
+excl <- list(initial=0)
+
+HESonly_PD <-
+  #evalWithMemoization(
+    derive_variables(
+      database = config$data$database,
+      field_definitions = TEU_SPECS$HESvsGP_PD,
+      exclusions = exclusions
+    #),
+    #key = c(TEU_SPECS$BrCa_PRS, exclusions)
+  )
+
+pretty_func <- pretty_switch(field_definitions=TEU_SPECS$T2DM_PRS, return_type = "function")
+pretty_names <- pretty_switch(field_definitions=TEU_SPECS$T2DM_PRS, return_type="list")
+
+
+#backup<-data
+
+saveRDS(HESonly_PD,file = file.path(config$data$derived,"HESonly_PD.rds"))
+```
+
+```{r derive HES+GP data}
+
+# Exclude extra prevalent PD based on GP data (clinical and scripts)
+HESGP_PD <- HESonly_PD%>%filter(TEU_PC_PD_prev==0 & TEU_PCmeds_PD_prev==0)
+excl$nodiab_GP <- nrow(HESGP_PD)
+
+saveRDS(HESGP_PD,file.path(config$data$derived,"HESGP_PD.rds"))
+```
+
+
+```{r PD FC,eval=FALSE}
+# Analysis FC
+label1 <- paste0('UKB participants\\nn = ', excl$initial)
+label2 <- paste0('Participants aged between 40 and 70\\n','n = ', excl$agewithin)
+label3 <- paste0('Participants who had GP data\\nn = ', excl$GP)
+label4 <- paste0('HES only population: \n No history of PD in either self-reported responses','\\n',' at enrolment or hospital inpatient records \\nn = ',excl$nodiab_1)
+label5 <- paste0('HES+GP population: \n No history of PD in either self-reported responses','\\n',' at enrolment, hospital inpatient, or GP data \\nn = ',excl$nodiab_GP)
+
+
+label6 <- paste0(excl$ini-excl$agewithin,' outside the age range of [40,70) years\\l','')
+
+label7 <-paste0(excl$agewithin-excl$GP,' no GP data available\\l','')
+
+label8 <- paste0(excl$GP-excl$nodiab_1, ' prevalent PD cases from self-report \\l at enrolment or hospital inpatient records\\l','')
+
+label9 <- paste0(excl$nodiab_1-excl$nodiab_GP, ' prevalent PD cases from GP data\\l','')
+
+gv <- read_file(file.path(config$outputs$flowcharts, "AnalysisPop.gv"))
+
+export_svg(DiagrammeR::grViz(glue(gv))
+) %>% charToRaw %>%rsvg%>%
+  #rsvg(width = 638, height = 410) %>%
+  png::writePNG(file.path(config$outputs$figures, "PD_excl.png"))
+
+```
+
+# Dementia
+
+```{r derive-data,eval=FALSE,include=FALSE}
+
+source(file.path(config$scripts$cleaning, "dataset_generator.R"))
+
+exclusions <- function(data) {
+  
+  excl$initial <<- nrow(data)
+
+  # Age
+  data<-data%>%filter(!(!is.na(TEU_BaC_AgeAtRec) & TEU_BaC_AgeAtRec<60 | TEU_BaC_AgeAtRec>=70))
+  excl$agewithin<<-nrow(data)
+  
+  # Exclude ppl without GP data or left GP before/on baseline
+  data<-data%>%filter(!is.na(TEU_PC_ind) & Dem_censordate>Rec_DateAssess)
+  excl$GP<<-nrow(data)
+  
+  # Exclude ppl with missing APOE carrier status
+  data<-data%>%filter(!is.na(TEU_APOE_e4_carrier))
+  excl$APOE<<-nrow(data)
+  
+  # Exclude prevalent based on self-report/HES
+  data <- data%>%filter(is.na(TEU_VeI_Dem) & TEU_HES_Dem_prev=="No")
+  excl$nodiab_1 <<- nrow(data)
+  
+  # Exclude extra prevalent based on GP data (clinical)
+  #data <- data%>%filter(TEU_PC_Dem_prev==0)
+  #excl$nodiab_GP <<- nrow(data)
+
+  return(data)
+}
+
+excl <- list(initial=0)
+
+HESonly_dem <-
+  #evalWithMemoization(
+    derive_variables(
+      database = config$data$database,
+      field_definitions = TEU_SPECS$HESvsGP_dementia,
+      exclusions = exclusions
+    #),
+    #key = c(TEU_SPECS$BrCa_PRS, exclusions)
+  )
+
+pretty_func <- pretty_switch(field_definitions=TEU_SPECS$T2DM_PRS, return_type = "function")
+pretty_names <- pretty_switch(field_definitions=TEU_SPECS$T2DM_PRS, return_type="list")
+
+
+saveRDS(HESonly_dem,file = file.path(config$data$derived,"HESonly_dem.rds"))
+```
+
+```{r derive HES+GP data}
+
+# Exclude extra prevalent dementia based on GP data (clinical)
+HESGP_dem <- HESonly_dem%>%filter(TEU_PC_Dem_prev==0)
+excl$nodiab_GP <- nrow(HESGP_dem)
+
+saveRDS(HESGP_dem,file.path(config$data$derived,"HESGP_dem.rds"))
+```
+
+
+
+```{r dementia FC,eval=FALSE}
+# Analysis FC
+label1 <- paste0('UKB participants\\nn = ', excl$initial)
+label2 <- paste0('Participants aged between 60 and 70\\n','n = ', excl$agewithin)
+label3 <- paste0('Participants who had GP data\\nn = ', excl$GP)
+label4 <- paste0('Participants who had APOE &#949;4 carrier status\\nn = ', excl$APOE)
+label5 <- paste0('HES only population: \n No history of dementia in either self-reported responses','\\n',' at enrolment or hospital inpatient records \\nn = ',excl$nodiab_1)
+label6 <- paste0('HES+GP population: \n No history of dementia in either self-reported responses','\\n',' at enrolment, hospital inpatient, or GP data \\nn = ',excl$nodiab_GP)
+
+label7 <- paste0(excl$ini-excl$agewithin,' outside the age range of [60,70) years\\l','')
+
+label8 <-paste0(excl$agewithin-excl$GP,' no GP data available\\l','')
+
+label9 <- paste0(excl$GP-excl$APOE,' missing APOE &#949;4 carrier status\\l','')
+
+label10 <- paste0(excl$APOE-excl$nodiab_1, ' prevalent dementia cases from self-report \\l at enrolment or hospital inpatient records\\l','')
+
+label11 <- paste0(excl$nodiab_1-excl$nodiab_GP, ' prevalent dementia cases from GP data\\l','')
+
+gv <- read_file(file.path(config$outputs$flowcharts, "AnalysisPop_Dem.gv"))
+
+export_svg(DiagrammeR::grViz(glue(gv))
+) %>% charToRaw %>%rsvg%>%
+  #rsvg(width = 638, height = 410) %>%
+  png::writePNG(file.path(config$outputs$figures, "Dem_excl.png"))
+
+```
+
+
+
+

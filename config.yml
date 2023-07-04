@@ -1,0 +1,25 @@
+data:
+ received: "K:/TEU/UKB33952_Data/Data_Downloads/V2_TLAtables"
+ database: "K:/TEU/UKB33952_Data/Data_Downloads/V7_database_duckdb0.7.1/ukb_v7.db"
+ portal:
+  HES: "K:/TEU/UKB33952_Data/Data_Portal/HES_diagnoses/20230414/duckdb0.7.1"
+  deaths: "K:/TEU/UKB33952_Data/Data_Portal/Death_Registry/20230414/duckdb0.7.1"
+  primarycare: "K:/TEU/UKB33952_Data/Data_Portal/Primary_Care/20220801/duckdb0.7.1"
+ derived: "Data/Derived"
+ analysed: "Data/Analysed"
+ prs: "K:/TEU/UKB_Genetic_Data/bmrc-ukb-repo/prs/projects/htn-evangelou2018/outputs"
+cleaning:
+ withdrawals: "K:/TEU/UKB33952_Data/Data_Downloads/Withdrawals/w33952_2023-04-25.csv"
+ renaming: "K:/TEU/UKB33952_Data/Data_Dictionary/Renaming_List_UPDATE_Sep2023_TEU.csv"
+ coding: "K:/TEU/UKB33952_Data/Data_Dictionary/Mappings/Encoding_files"
+ mapping: "K:/TEU/UKB33952_Data/Data_Dictionary/Mappings/Analysis_codings_xlsx/Diabetes"
+ HESvsGP_mapping: "K:/TEU/UKB33952_Data/Data_Dictionary/Mappings/Analysis_codings_xlsx/HESvsGP"
+ primarycare: "K:/TEU/PRSonDiabetes/Bragg2022_Shared"
+outputs:
+ figures: "K:/TEU/HESvsGP/Outputs"
+ flowcharts: "Scripts/Stats_Analysis/Flowcharts"
+functions: "Scripts/Stats_Analysis/JCfunctions.R"
+scripts:
+ cleaning: "Scripts/Data_Management/Scripts_Cleaning"
+ processing: "Scripts/Data_Management/Scripts_Processing"
+

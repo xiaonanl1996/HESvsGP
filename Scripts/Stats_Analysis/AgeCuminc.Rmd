@@ -1,0 +1,382 @@
+---
+title: "Age specific cumulative incidence"
+author: "Xiaonan Liu"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  word_document:
+      fig_width: 8
+      fig_height: 6
+      reference_docx: "K:/TEU/TEU_Guides/TEU_DocStyle_Rmd_2020.dotx"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include=TRUE, echo=FALSE)
+
+library(yaml)
+library(here)
+library(tidyr)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(magrittr)
+library(svglite)
+library(rsvg)
+library(png)
+library(dplyr)
+library(Rcpp)
+library(etm)
+library(readr)
+library(tibble)
+library(Publish)
+library(rsample)
+library(arsenal)
+library(survival)
+library(survminer)
+library(forestplot)
+library(pander)
+library(naniar)
+library(boot)
+library(cowplot)
+
+panderOptions('table.alignment.default', function(df)
+    ifelse(sapply(df, is.numeric), 'right', 'left'))
+panderOptions('table.split.table', Inf)
+panderOptions('big.mark', ",")
+panderOptions('keep.trailing.zeros', TRUE)
+panderOptions('missing', '')
+
+
+# Specify the markdown format for knitr tables, otherwise they're not compatible with kableExtra
+#options(knitr.kable.NA='', knitr.table.format = "html")
+#options(kableExtra.auto_format = FALSE)
+# Set the root directory to the project directory (otherwise knitr works in the directory of the Rmd file by default)
+
+knitr::opts_knit$set(root.dir = here::here())
+
+# Load the project config file for filepaths etc
+config = yaml.load_file(here::here("./config.yml"))
+source(here::here(config$functions))
+
+derived_path=config$data$derived
+
+HESonly_dem<-readRDS(here::here(file.path(derived_path,"HESonly_dem.rds")))
+HESGP_dem<-readRDS(here::here(file.path(derived_path,"HESGP_dem.rds")))
+
+HESonly_PD<-readRDS(here::here(file.path(derived_path,"HESonly_PD.rds")))
+HESGP_PD<-readRDS(here::here(file.path(derived_path,"HESGP_PD.rds")))
+
+HESonly_diab<-readRDS(here::here(file.path(derived_path,"HESonly_diab.rds")))
+HESGP_diab<-readRDS(here::here(file.path(derived_path,"HESGP_diab.rds")))
+
+```
+
+
+# Parkinson's disease (PD)
+
+```{r}
+# HES only population
+HESonly_PD=HESonly_PD%>%
+  # Create CR status column: 0=censor; 1=event; 2=Non outcome death
+  mutate(cr_status=ifelse((!is.na(TEU_Dth_NotPD_dthdate) & TEU_Dth_NotPD_dthdate<=PD_censordate & HESDth_PD_status==0),2,HESDth_PD_status))%>%
+  # Categorise FU age groups for plotting 
+  mutate(
+    HESDth_PD_age=TEU_BaC_AgeAtRec+HESDth_PD_time)
+
+# HES+GP population
+HESGP_PD=HESGP_PD%>%
+  # Create CR status column: 0=censor; 1=T2D event; 2=Non T2D death
+  mutate(cr_status=ifelse((!is.na(TEU_Dth_NotPD_dthdate) & TEU_Dth_NotPD_dthdate<=PD_censordate & HESDthGP_PD_status==0),2,HESDthGP_PD_status))%>%
+  # Categorise FU age groups for plotting 
+  mutate(
+    HESDthGP_PD_age=TEU_BaC_AgeAtRec+HESDthGP_PD_time)
+
+```
+
+
+```{r}
+# Age as time scale
+# HES only
+  
+res_HESonly<-cuminc_df(data=HESonly_PD,start = "TEU_BaC_AgeAtRec",end="HESDth_PD_age", cr_status="cr_status",group=1,status="HESDth_PD_status")%>%
+  mutate(CIF="HES only")
+
+# HES+GP
+
+res_HESGP<-cuminc_df(data=HESGP_PD,start="TEU_BaC_AgeAtRec",end="HESDthGP_PD_age", cr_status="cr_status",group=1,status="HESDthGP_PD_status")%>%
+  mutate(CIF="HES+GP")
+
+## rbind
+res<-rbind(res_HESonly,res_HESGP)%>%mutate(CIF=as.factor(CIF))
+
+
+HESonly_labels=N_cases_CR(data=HESonly_PD,label_name="HES only",status="HESDth_PD_status",cr_status="cr_status")
+  
+HESGP_labels=N_cases_CR(data=HESGP_PD,label_name="HES+GP",status="HESDthGP_PD_status",cr_status="cr_status")
+
+ggplot(res, aes(time, P)) +
+      #geom_ribbon(aes(ymin = lower, ymax = upper, fill = CIF), alpha = 0.2) +
+      geom_line(aes(color = CIF),linewidth=1) +
+      scale_x_continuous(breaks = seq(40,80,10)) +
+      scale_y_continuous(limits = c(0,0.03)) +
+      labs(x="Age in years",y="Cumulative incidence",title = "Age-specific cumulative incidence of Parkinson's disease (PD)",caption = "CR cases stands for non-PD death cases")+
+      scale_color_manual(name="Population",
+                           breaks=unique(res$CIF),
+                          labels=c(HESonly_labels,HESGP_labels),
+                         values=c("#00BFC4","#F8766D"))+
+      guides(fill="none") +
+      theme_bw()+ theme(legend.position="top")
+
+```
+
+
+## By family history
+
+```{r}
+
+res_HESonly<-cuminc_df(data=HESonly_PD,start = "TEU_BaC_AgeAtRec",end="HESDth_PD_age", cr_status="cr_status",group="TEU_FaH_PD",status="HESDth_PD_status")%>%
+  mutate(Pop="HES only")
+
+# HES+GP
+
+res_HESGP<-cuminc_df(data=HESGP_PD,start="TEU_BaC_AgeAtRec",end="HESDthGP_PD_age", cr_status="cr_status",group="TEU_FaH_PD",status="HESDthGP_PD_status")%>%
+  mutate(Pop="HES+GP")
+
+## rbind
+res<-rbind(res_HESonly,res_HESGP)%>%mutate(CIF=as.factor(CIF),Pop=as.factor(Pop))
+
+
+PD_FaH<-ggplot(res, aes(time, P)) +
+      #geom_ribbon(aes(ymin = lower, ymax = upper, fill = CIF), alpha = 0.2) +
+      geom_line(aes(color = Pop,linetype=factor(CIF,labels=c("No","Yes"))),linewidth=1.2) +
+      scale_x_continuous(breaks = seq(40,80,10)) +
+      scale_y_continuous(limits = c(0,0.035)) +
+      labs(x="Age in years",y="Cumulative incidence",title = "Parkinson's disease",caption = "")+
+      scale_linetype_manual(name="Family history",
+                            values=c("dotted","solid"))+
+      scale_color_manual(name="Population",
+                           breaks=c("HES only","HES+GP"),
+                           values=c("#00BFC4","#F8766D"))+
+      guides(fill="none") +
+      theme_bw()
+
+```
+
+
+# T2D 
+
+```{r}
+# HES only population
+HESonly_diab=HESonly_diab%>%
+  # Create CR status column: 0=censor; 1=T2D event; 2=Non T2D death
+  mutate(cr_status=ifelse((!is.na(TEU_Dth_NotT2DM_dthdate) &  TEU_Dth_NotT2DM_dthdate<=T2D_censordate & HESDth_T2D_status==0),2,HESDth_T2D_status))%>%
+  # Categorise FU age groups for plotting 
+  mutate(
+    HESDth_T2D_age=TEU_BaC_AgeAtRec+HESDth_T2D_time)
+
+# HES+GP population
+HESGP_diab=HESGP_diab%>%
+  # Create CR status column: 0=censor; 1=T2D event; 2=Non T2D death
+  mutate(cr_status=ifelse((!is.na(TEU_Dth_NotT2DM_dthdate) & TEU_Dth_NotT2DM_dthdate<=T2D_censordate & HESDthGP_T2D_status==0),2,HESDthGP_T2D_status))%>%
+  # Categorise FU age groups for plotting 
+  mutate(
+    HESDthGP_T2D_age=TEU_BaC_AgeAtRec+HESDthGP_T2D_time)
+
+```
+
+```{r}
+# Age as time scale
+
+# HES only
+  
+res_HESonly<-cuminc_df(data=HESonly_diab,start = "TEU_BaC_AgeAtRec",end="HESDth_T2D_age", cr_status="cr_status",group=1,status="HESDth_T2D_status")%>%
+  mutate(CIF="HES only")
+
+# HES+GP
+
+res_HESGP<-cuminc_df(data=HESGP_diab,start="TEU_BaC_AgeAtRec",end="HESDthGP_T2D_age", cr_status="cr_status",group=1,status="HESDthGP_T2D_status")%>%
+  mutate(CIF="HES+GP")
+
+## rbind
+res<-rbind(res_HESonly,res_HESGP)%>%mutate(CIF=as.factor(CIF))
+
+
+HESonly_labels=N_cases_CR(data=HESonly_diab,label_name="HES only",status="HESDth_T2D_status",cr_status="cr_status")
+  
+HESGP_labels=N_cases_CR(data=HESGP_diab,label_name="HES+GP",status="HESDthGP_T2D_status",cr_status="cr_status")
+
+ggplot(res, aes(time, P)) +
+      #geom_ribbon(aes(ymin = lower, ymax = upper, fill = CIF), alpha = 0.2) +
+      geom_line(aes(color = CIF),linewidth=1) +
+      scale_x_continuous(breaks = seq(40,80,10)) +
+      scale_y_continuous(limits = c(0,0.2)) +
+      labs(x="Age in years",y="Cumulative incidence",title = "Age-specific cumulative incidence of type 2 diabetes (T2D)",caption = "CR cases stands for non-T2D death cases")+
+      scale_color_manual(name="Population",
+                           breaks=unique(res$CIF),
+                          labels=c(HESonly_labels,HESGP_labels),
+                         values=c("#00BFC4","#F8766D"))+
+      guides(fill="none") +
+      theme_bw()+ theme(legend.position="top")
+
+```
+
+
+## By family history
+
+```{r}
+
+res_HESonly<-cuminc_df(data=HESonly_diab,start = "TEU_BaC_AgeAtRec",end="HESDth_T2D_age", cr_status="cr_status",group="TEU_FaH_diab",status="HESDth_T2D_status")%>%
+  mutate(Pop="HES only")
+
+# HES+GP
+
+res_HESGP<-cuminc_df(data=HESGP_diab,start="TEU_BaC_AgeAtRec",end="HESDthGP_T2D_age", cr_status="cr_status",group="TEU_FaH_diab",status="HESDthGP_T2D_status")%>%
+  mutate(Pop="HES+GP")
+
+## rbind
+res<-rbind(res_HESonly,res_HESGP)%>%mutate(CIF=as.factor(CIF),Pop=as.factor(Pop))
+
+
+T2D_FaH<-ggplot(res, aes(time, P)) +
+      #geom_ribbon(aes(ymin = lower, ymax = upper, fill = CIF), alpha = 0.2) +
+      geom_line(aes(color = Pop,linetype=factor(CIF,labels=c("No","Yes"))),linewidth=1.2) +
+      scale_x_continuous(breaks = seq(40,80,10)) +
+      scale_y_continuous(limits = c(0,0.3)) +
+      labs(x="Age in years",y="",title = "Type 2 diabetes",caption = "")+
+      scale_linetype_manual(name="Family history of diabetes",
+                            values=c("dotted","solid"))+
+      scale_color_manual(name="Population",
+                           breaks=c("HES only","HES+GP"),
+                           values=c("#00BFC4","#F8766D"))+
+      guides(fill="none") +
+      theme_bw()+ theme(legend.position="none")
+
+
+```
+
+# Dementia
+
+
+```{r}
+# HES only population
+HESonly_dem=HESonly_dem%>%
+  # Create CR status column: 0=censor; 1=event; 2=Non outcome death
+  mutate(cr_status=ifelse((!is.na(TEU_Dth_NotDem_dthdate) & TEU_Dth_NotDem_dthdate<=Dem_censordate & HESDth_Dem_status==0),2,HESDth_Dem_status))%>%
+  # Categorise FU age groups for plotting 
+  mutate(
+    HESDth_Dem_age=TEU_BaC_AgeAtRec+HESDth_Dem_time)
+
+# HES+GP population
+HESGP_dem=HESGP_dem%>%
+  # Create CR status column: 0=censor; 1=T2D event; 2=Non T2D death
+  mutate(cr_status=ifelse((!is.na(TEU_Dth_NotDem_dthdate) & TEU_Dth_NotDem_dthdate<=Dem_censordate & HESDthGP_Dem_status==0),2,HESDthGP_Dem_status))%>%
+  # Categorise FU age groups for plotting 
+  mutate(
+    HESDthGP_Dem_age=TEU_BaC_AgeAtRec+HESDthGP_Dem_time)
+
+```
+
+```{r}
+# Age as time scale
+
+# HES only
+  
+res_HESonly<-cuminc_df(data=HESonly_dem,start = "TEU_BaC_AgeAtRec",end="HESDth_Dem_age", cr_status="cr_status",group=1,status="HESDth_Dem_status")%>%
+  mutate(CIF="HES only")
+
+# HES+GP
+
+res_HESGP<-cuminc_df(data=HESGP_dem,start="TEU_BaC_AgeAtRec",end="HESDthGP_Dem_age", cr_status="cr_status",group=1,status="HESDthGP_Dem_status")%>%
+  mutate(CIF="HES+GP")
+
+## rbind
+res<-rbind(res_HESonly,res_HESGP)%>%mutate(CIF=as.factor(CIF))
+
+
+HESonly_labels=N_cases_CR(data=HESonly_dem,label_name="HES only",status="HESDth_Dem_status",cr_status="cr_status")
+  
+HESGP_labels=N_cases_CR(data=HESGP_dem,label_name="HES+GP",status="HESDthGP_Dem_status",cr_status="cr_status")
+
+ggplot(res, aes(time, P)) +
+      #geom_ribbon(aes(ymin = lower, ymax = upper, fill = CIF), alpha = 0.2) +
+      geom_line(aes(color = CIF),linewidth=1) +
+      scale_x_continuous(breaks = seq(60,80,10),limits=c(60,80)) +
+      scale_y_continuous(limits = c(0,0.07)) +
+      labs(x="Age in years",y="Cumulative incidence",title = "Age-specific cumulative incidence of dementia",caption = "CR cases stands for non-dementia death cases")+
+      scale_color_manual(name="Population",
+                           breaks=unique(res$CIF),
+                          labels=c(HESonly_labels,HESGP_labels),
+                         values=c("#00BFC4","#F8766D"))+
+      guides(fill="none") +
+      theme_bw()+ theme(legend.position="top")
+
+```
+
+
+## By family history
+
+```{r}
+
+res_HESonly<-cuminc_df(data=HESonly_dem,start = "TEU_BaC_AgeAtRec",end="HESDth_Dem_age", cr_status="cr_status",group="TEU_FaH_dem",status="HESDth_Dem_status")%>%
+  mutate(Pop="HES only")
+
+# HES+GP
+
+res_HESGP<-cuminc_df(data=HESGP_dem,start="TEU_BaC_AgeAtRec",end="HESDthGP_Dem_age", cr_status="cr_status",group="TEU_FaH_dem",status="HESDthGP_Dem_status")%>%
+  mutate(Pop="HES+GP")
+
+## rbind
+res<-rbind(res_HESonly,res_HESGP)%>%mutate(CIF=as.factor(CIF),Pop=as.factor(Pop))
+
+
+Dem_FaH<-ggplot(res, aes(time, P)) +
+      #geom_ribbon(aes(ymin = lower, ymax = upper, fill = CIF), alpha = 0.2) +
+      geom_line(aes(color = Pop,linetype=factor(CIF,labels=c("No","Yes"))),linewidth=1.2) +
+      scale_x_continuous(breaks = seq(60,80,10),limits=c(60,80)) +
+      scale_y_continuous(limits = c(0,0.13)) +
+      labs(x="Age in years",y="",title = "Dementia",caption = "")+
+      scale_linetype_manual(name="Family history of Alz/dementia",
+                            values=c("dotted","solid"))+
+      scale_color_manual(name="Population",
+                           breaks=c("HES only","HES+GP"),
+                           values=c("#00BFC4","#F8766D"))+
+      guides(fill="none") +
+      theme_bw()+ theme(legend.position="none")
+
+
+```
+
+```{r combine all subplots by FaH}
+
+legend<-get_legend(PD_FaH + theme(legend.box.margin = margin(0, 0, 0, 12)))
+
+PD_FaH <- PD_FaH + theme(legend.position="none")
+
+prow<-plot_grid(PD_FaH,T2D_FaH,Dem_FaH,labels=c("A","B","C"),ncol=3,nrow=1)
+
+tiff(file.path(config$outputs$figures,"AgeCuminc_FaH.tiff"), units="in", width=12, height=5, res=300)
+
+plot_grid(prow,legend,rel_widths = c(3,.4))
+
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

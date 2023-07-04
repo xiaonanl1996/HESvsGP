@@ -1,0 +1,893 @@
+---
+title: 'HESvsGP: Cox models and forestplots'
+author: "Xiaonan Liu"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  word_document:
+      fig_width: 8
+      fig_height: 6
+      reference_docx: "K:/TEU/TEU_Guides/TEU_DocStyle_Rmd_2020.dotx"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include=TRUE, echo=FALSE)
+
+library(yaml)
+library(here)
+library(tidyr)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(magrittr)
+library(svglite)
+library(rsvg)
+library(png)
+library(dplyr)
+library(Rcpp)
+library(etm)
+library(readr)
+library(tibble)
+library(Publish)
+library(rsample)
+library(arsenal)
+library(survival)
+library(survminer)
+library(forestplot)
+library(pander)
+library(naniar)
+library(boot)
+library(forcats)
+
+panderOptions('table.alignment.default', function(df)
+    ifelse(sapply(df, is.numeric), 'right', 'left'))
+panderOptions('table.split.table', Inf)
+panderOptions('big.mark', ",")
+panderOptions('keep.trailing.zeros', TRUE)
+panderOptions('missing', '')
+
+
+# Specify the markdown format for knitr tables, otherwise they're not compatible with kableExtra
+#options(knitr.kable.NA='', knitr.table.format = "html")
+#options(kableExtra.auto_format = FALSE)
+# Set the root directory to the project directory (otherwise knitr works in the directory of the Rmd file by default)
+
+knitr::opts_knit$set(root.dir = here::here())
+
+my_controls <- tableby.control(
+    test = F,
+    total = T,
+    #numeric.test = "kwt", cat.test = "chisq",
+    numeric.stats = c("meansd", "range", "Nmiss"), 
+    cat.stats = c("countpct", "Nmiss"),
+    stats.labels = list(
+      meansd = "Mean (SD)",
+      #medianq1q3 = "Median (IQR)",
+      range = "Min - Max",
+      Nmiss = "Missing",
+      Npct="N (Pct)"
+    ),
+    digits = 2L
+  )
+
+
+# Load the project config file for filepaths etc
+config = yaml.load_file(here::here("./config.yml"))
+source(here::here(config$functions))
+
+derived_path=config$data$derived
+
+HESonly_dem<-readRDS(here::here(file.path(derived_path,"HESonly_dem.rds")))
+HESGP_dem<-readRDS(here::here(file.path(derived_path,"HESGP_dem.rds")))
+
+HESonly_PD<-readRDS(here::here(file.path(derived_path,"HESonly_PD.rds")))
+HESGP_PD<-readRDS(here::here(file.path(derived_path,"HESGP_PD.rds")))
+
+HESonly_diab<-readRDS(here::here(file.path(derived_path,"HESonly_diab.rds")))
+HESGP_diab<-readRDS(here::here(file.path(derived_path,"HESGP_diab.rds")))
+
+# Load Bootstrap results
+Bootstrap_result_PD<-readRDS(here::here(file.path(derived_path,"Bootstrap_PD.rds")))
+Bootstrap_result_T2D_Males<-readRDS(here::here(file.path(derived_path,"Bootstrap_T2D_Males.rds")))
+Bootstrap_result_T2D_Females<-readRDS(here::here(file.path(derived_path,"Bootstrap_T2D_Females.rds")))
+Bootstrap_result_dem<-readRDS(here::here(file.path(derived_path,"Bootstrap_dem.rds")))
+```
+
+
+```{r load pretty names,include=FALSE}
+
+source(here::here(file.path(config$scripts$cleaning, "dataset_generator.R")))
+
+pretty_func <- pretty_switch(field_definitions=c(TEU_SPECS$HESvsGP_Diab,TEU_SPECS$HESvsGP_PD,TEU_SPECS$HESvsGP_dementia), return_type = "function")
+pretty_names <- pretty_switch(field_definitions=c(TEU_SPECS$HESvsGP_Diab,TEU_SPECS$HESvsGP_PD,TEU_SPECS$HESvsGP_dementia), return_type="list")
+
+```
+
+
+# Parkinson's disease (PD)
+
+Among HES only population for PD (N=`r nrow(HESonly_PD)`), there were `r sum(HESonly_PD$HESDth_PD_status)` incident PD cases over a median follow-up of `r pretty_dp(median(HESonly_PD$HESDth_PD_time),1)` years (IQR=`r pretty_confint(quantile(HESonly_PD$HESDth_PD_time, prob=c(.25)),quantile(HESonly_PD$HESDth_PD_time, prob=c(.75)),dp=2)`).
+
+
+Among HES+GP population for PD (N=`r nrow(HESGP_PD)`), there were `r sum(HESGP_PD$HESDthGP_PD_status)` incident PD cases over a median follow-up of `r pretty_dp(median(HESGP_PD$HESDthGP_PD_time),1)` years (IQR=`r pretty_confint(quantile(HESGP_PD$HESDthGP_PD_time, prob=c(.25)),quantile(HESGP_PD$HESDthGP_PD_time, prob=c(.75)),dp=2)`).
+
+
+## Baseline characteristics
+
+```{r, results='asis'}
+
+vars=c("TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_PD","TEU_Smo_Status")
+
+tmp <- HESonly_PD[,vars] %>%
+  mutate_at(c("TEU_Smo_Status","TEU_ethnicgrp"),~fct_na_value_to_level(., "Missing"))
+
+# Check the characteristics of RFs 
+table<-tableby(~.,data=tmp,control=my_controls)
+
+sumtab=summary(table,labelTranslations = pretty_names,title=paste0('Table 1a. Descriptive statistics of covariates for PD in HES only PD population.'))
+
+sumtab
+
+```
+
+
+```{r,results='asis'}
+
+tmp <- HESGP_PD[,vars] %>%
+ mutate_at(c("TEU_Smo_Status","TEU_ethnicgrp"),~fct_na_value_to_level(., "Missing"))
+
+# Check the characteristics of RFs 
+table<-tableby(~.,data=tmp,control=my_controls)
+
+sumtab=summary(table,labelTranslations = pretty_names,title=paste0('Table 1b. Descriptive statistics of covariates for PD in HES+GP PD population.'))
+
+sumtab
+
+
+```
+
+Missingness:
+
+```{r}
+
+PD_miss<-HESGP_PD[,vars]%>%miss_var_summary()%>%filter(n_miss!=0)%>%
+  rowwise%>%
+  mutate(variable=pretty_func(variable))
+
+pander(PD_miss,caption="Table 2. Missingness of covariates of PD in HES+GP population.")
+
+```
+
+The missing percentages seem small enough to conduct a complete case analysis. We would remove `r comp_remove_perc(HESonly_PD[,vars])`% of participants in HES only population and `r comp_remove_perc(HESGP_PD[,vars])`% in HES + GP population.
+
+
+## Cox models
+
+We fit the following model, including risk factors for PD, in two separate population, "HES only" and "HES + GP" populations. 
+
+PD ~ age + sex + self-reported ethnicity + Townsend score + FaH of PD + smoking.
+
+(XL, 19Apr2023): Bootstrap ran into convergence issue when resampling due to ethnicity variable. I replaced it to the binary ethnicity variable.
+
+
+```{r}
+
+# Fix bootstrap: Inspect if the convergence was due to ethnicity var
+
+# Bundle Mixed and Other ethnic groups
+#levels(HESonly_PD$TEU_ethnicgrp)=c("White", "Black", "S. Asian", "Other", "Other")
+
+#levels(HESGP_PD$TEU_ethnicgrp)=c("White", "Black", "S. Asian", "Other", "Other")
+
+```
+
+
+```{r Cox models PD}
+
+PD_vars <-replace(vars,vars=="TEU_ethnicgrp","Ethnicity")
+
+# HES only
+
+HESonly_formula <- as.formula(paste0("Surv(HESDth_PD_time, HESDth_PD_status)~ ", paste(PD_vars, collapse="+")))
+
+HESonly_Cox<-coxph(HESonly_formula,data=HESonly_PD)
+
+HESonly_Cox_df<-printcoxresults(df=HESonly_PD,varlist = PD_vars,modeloutput = HESonly_Cox,onecol = TRUE,IDcol=TRUE,forplot = TRUE)
+
+HESonly_forplot<-HESonly_Cox_df%>%
+  # Create HR (95% CI)
+  mutate(HR_CI=case_when(
+    is.na(LCI) & IDcol==Coefficient ~ NA_character_,
+    is.na(LCI) & IDcol!=Coefficient ~ "1",
+    TRUE ~ paste0(pretty_dp(HR_num,2)," ",pretty_confint(LCI, UCI, dp=2))
+  ))
+
+
+# HES + GP
+
+HESGP_formula <- as.formula(paste0("Surv(HESDthGP_PD_time, HESDthGP_PD_status)~ ", paste(PD_vars, collapse="+")))
+
+HESGP_Cox<-coxph(HESGP_formula,data=HESGP_PD)
+
+HESGP_Cox_df<-printcoxresults(df=HESGP_PD,varlist = PD_vars,modeloutput = HESGP_Cox,onecol = TRUE,IDcol=TRUE,forplot = TRUE)
+
+HESGP_forplot<-HESGP_Cox_df%>%
+  # Create HR (95% CI)
+  mutate(HR_CI=case_when(
+    is.na(LCI) & IDcol==Coefficient ~ NA_character_,
+    is.na(LCI) & IDcol!=Coefficient ~ "1",
+    TRUE ~ paste0(pretty_dp(HR_num,2)," ",pretty_confint(LCI, UCI, dp=2))
+  ))
+
+```
+
+(XL, 11Apr2023): I am currently using `forestplot` R package to visualise the results of Cox models fitted using "HES only" and "HES + GP" population. However, this package does not display label text if it is different between groups. So for now, I presented a table for displaying the actual HR (95% CI) estimates and p-values separately.
+
+```{r bootstrap RHR PD}
+# rbind HES only and HES+GP because we need to perform stratified bootstrap
+HESonly_PD$ind="HESonly"
+HESGP_PD$ind="HES+GP"
+
+#svars=c("TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_PD","TEU_Smo_Status")
+
+HESonly_PD_comp<-HESonly_PD%>%
+  select(HESDth_PD_status,HESDth_PD_time,ind,all_of(PD_vars))%>%
+  rename(TEU_PD_status=HESDth_PD_status,
+         TEU_PD_time=HESDth_PD_time)%>%
+  na.omit()
+
+HESGP_PD_comp<-HESGP_PD%>%
+  select(HESDthGP_PD_status,HESDthGP_PD_time,ind,all_of(PD_vars))%>%
+  rename(TEU_PD_status=HESDthGP_PD_status,
+         TEU_PD_time=HESDthGP_PD_time)%>%
+  na.omit()
+
+
+data_PD<-rbind(HESonly_PD_comp,HESGP_PD_comp)
+```
+
+```{r,eval=FALSE}
+
+set.seed(10)
+
+Bootstrap_result_PD = boot(data=data_PD,
+                  statistic=RHR,
+                  stype = "i",
+                  strata = factor(data_PD$ind),
+                  R=1000,
+                  vars=PD_vars,
+                  parallel = "snow")
+
+# save bootstrap results
+saveRDS(Bootstrap_result_PD,file.path(config$data$derived,"Bootstrap_PD.rds"))
+```
+
+```{r inspect bootstrap results}
+
+plot(Bootstrap_result_PD)
+
+Bootstrap_ci_PD<-lapply(1:length(Bootstrap_result_PD$t0),
+       function(i) BootCI_df(Bootstrap_result_PD, type="perc",conf=0.95,i))
+
+Bootstrap_ci_df<-as.data.frame(do.call(rbind, Bootstrap_ci_PD))
+
+```
+
+
+```{r forest plot PD}
+tiff(file.path(config$outputs$figures,"PD_forestplot_comp.tiff"), units="in", width=10, height=10, res=300)
+
+HESvsGP_forestplot(HESonly_forplot,HESGP_forplot,Bootstrap_ci_df,clip=c(0,3.5),xticks=seq(0.0, 3.5, 0.5))
+
+dev.off()
+```
+
+```{r PD Table}
+# LHS is HES only; RHS is HES + GP
+
+PD_table<-full_join(HESonly_forplot%>%select(IDcol,Coefficient,HR_CI,p),
+                    HESGP_forplot%>%select(IDcol,HR_CI,p),
+                    by="IDcol",suffix=c(".HES",".HESGP"))%>%
+  rowwise()%>%
+  mutate(Coefficient=pretty_func(Coefficient))
+
+pander(PD_table%>%select(!IDcol),caption=paste0("Table 3. Results of Cox models of PD obtained using HES only (N= ",HESonly_Cox$n, ") and HES+GP population (N= ",HESGP_Cox$n,")."))
+
+```
+
+
+```{r forestplot experiment,eval=FALSE}
+
+# Wide
+forplot<-full_join(HESonly_forplot%>%select(IDcol,Coefficient,HR_num,LCI,UCI,HR_CI),
+                   HESGP_forplot%>%select(IDcol,HR_num,LCI,UCI,HR_CI),
+                   by="IDcol",suffix=c(".HES",".HESGP"))
+
+# Fix for plotting: Remove HR_CI of 1 to blank 
+forplot$HR_CI.HES[is.na(forplot$LCI.HES)] <- ""
+  # We want to show HR=1 for HES+GP pop
+forplot$HR_CI.HESGP[is.na(forplot$HR_CI.HESGP)]<-""
+  
+  ##### Delete below if don't want to plot HR=1 in plot
+  
+  # Replace LCI and UCI for reference level to 1 for plotting
+forplot$LCI.HES[is.na(forplot$LCI.HES) & forplot$IDcol!=forplot$Coefficient]<-1
+forplot$UCI.HES[is.na(forplot$UCI.HES) & forplot$IDcol!=forplot$Coefficient]<-1
+  
+forplot$LCI.HESGP[is.na(forplot$LCI.HESGP) & forplot$IDcol!=forplot$Coefficient]<-1
+forplot$UCI.HESGP[is.na(forplot$UCI.HESGP) & forplot$IDcol!=forplot$Coefficient]<-1
+
+
+forplot<-forplot%>%
+  # Add space for levels of categorical vars
+  mutate(Coefficient=ifelse(IDcol!=Coefficient,paste0("       ",Coefficient),Coefficient))%>%
+  # Change variables to pretty names
+  rowwise()%>%
+  mutate(Coefficient=pretty_func(Coefficient))
+
+# Display text
+tabletextdummy<- list(
+  c("Covariates",forplot$Coefficient),
+  c("HR (95% CI)",sfrac_XL(forplot_RHR$HR_CI.HES,forplot_RHR$HR_CI.HESGP,data=forplot_RHR)),
+  c("RHR (95% CI)",forplot_RHR$RHR_CI)
+)
+
+# Plot
+forestplot(tabletextdummy, 
+           mean= cbind(c(NA, forplot$HR_num.HES), c(NA,forplot$HR_num.HESGP)),
+           lower = cbind (c(NA,forplot$LCI.HES), c(NA,forplot$LCI.HESGP)), 
+           upper = cbind(c(NA,forplot$UCI.HES), c(NA, forplot$UCI.HESGP)),
+           new_page = TRUE,
+           clip=c(0,3.5),
+           xticks=seq(0.0, 3.5, 0.5),
+           #lineheight = unit(50,"mm"), # contradict with legend below
+           line.margin = .02, # Add this to avoid crowding (higher value more crowded)
+           xlog = FALSE, zero=1, 
+           col = fpColors(box = c("skyblue3","red4"), 
+                          lines = c("skyblue2","red3")),
+           fn.ci_norm = c(fpDrawNormalCI, fpDrawDiamondCI),
+           is.summary = c(TRUE,rep(FALSE,15)), 
+           graph.pos = 2,
+           boxsize = 0.3, 
+           legend = c("HES only", "HES+GP"),
+           vertices = TRUE,
+           colgap=unit(3, 'mm'),
+           graphwidth=unit(80, 'mm'), # width of the plot
+           lwd.ci=2,
+           lwd.xaxis=2,
+           txt_gp = fpTxtGp(ticks=gpar(cex=1),label=gpar(cex=1.3),legend=gpar(cex=1)))%>%
+  fp_set_zebra_style("#F5F9F9")%>%
+  fp_add_lines("black")
+
+```
+
+
+
+# T2D 
+
+Among HES only population for T2D (N=`r nrow(HESonly_diab)`), there were `r sum(HESonly_diab$HESDth_T2D_status)` incident T2D cases over a median follow-up of `r pretty_dp(median(HESonly_diab$HESDth_T2D_time),1)` years (IQR=`r pretty_confint(quantile(HESonly_diab$HESDth_T2D_time, prob=c(.25)),quantile(HESonly_diab$HESDth_T2D_time, prob=c(.75)),dp=2)`).
+
+
+Among HES+GP population for T2D (N=`r nrow(HESGP_diab)`), there were `r sum(HESGP_diab$HESDthGP_T2D_status)` incident T2D cases over a median follow-up of `r pretty_dp(median(HESGP_diab$HESDthGP_T2D_time),1)` years (IQR=`r pretty_confint(quantile(HESGP_diab$HESDthGP_T2D_time, prob=c(.25)),quantile(HESGP_diab$HESDthGP_T2D_time, prob=c(.75)),dp=2)`).
+
+
+## Baseline characteristics
+
+```{r,results='asis'}
+
+vars=c("TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_diab","BSM_WaistCirc","Estw_gestational","Dem_BSM_BMIcat","Dem_InPhA_WHO","TEU_evidenceHTN")
+
+tmp <- HESonly_diab[,vars] %>%
+  mutate_at(c("TEU_ethnicgrp","Dem_BSM_BMIcat","Dem_InPhA_WHO"),~fct_na_value_to_level(., "Missing"))
+
+# Check the characteristics of RFs 
+table<-tableby(BaC_Sex~.,data=tmp,control=my_controls)
+
+sumtab=summary(table,labelTranslations = pretty_names,title=paste0('Table 4a. Descriptive statistics of risk factors for type 2 diabetes (T2D) in HES only T2D population.'))
+
+sumtab
+
+```
+
+
+```{r,results='asis'}
+
+tmp <- HESGP_diab[,vars] %>%
+  mutate_at(c("TEU_ethnicgrp","Dem_BSM_BMIcat","Dem_InPhA_WHO"),~fct_na_value_to_level(., "Missing"))
+
+# Check the characteristics of RFs 
+table<-tableby(BaC_Sex~.,data=tmp,control=my_controls)
+
+sumtab=summary(table,labelTranslations = pretty_names,title=paste0('Table 4b. Descriptive statistics of risk factors for type 2 diabetes (T2D) in HES+GP T2D population.'))
+
+sumtab
+
+```
+
+Missingness: 
+
+```{r}
+
+Diab_miss<-HESGP_diab[,vars]%>%miss_var_summary()%>%filter(n_miss!=0)%>%
+  rowwise()%>%
+  mutate(variable=pretty_func(variable))
+
+pander(Diab_miss,caption="Table 5. Missingness of covariates of T2D in HES+GP population.")
+
+```
+
+The missing percentages seem small enough to conduct a complete case analysis. We would remove `r comp_remove_perc(HESonly_diab[,vars])`% of participants in HES only population and `r comp_remove_perc(HESGP_diab[,vars])` % in HES + GP population.
+
+
+## Cox models
+
+We fitted the Cox model below in males:
+
+T2D ~ age + ethnicity + Townsend + Family history of diabetes + Obesity + Hypertension + Waist circumference + Physical Inactivity.
+
+And then the another Cox model further adding gestational diabetes in females.
+
+```{r Temp change level name for foresplot T2D}
+levels(HESonly_diab$Estw_gestational)<-c("No ","Yes ")
+levels(HESonly_diab$TEU_evidenceHTN)<-c("No  ","Yes  ")
+
+levels(HESGP_diab$Estw_gestational)<-c("No ","Yes ")
+levels(HESGP_diab$TEU_evidenceHTN)<-c("No  ","Yes  ")
+
+```
+
+
+### Males
+
+Due to the low number of underweight males, the model did not converge. Hence we replaced the BMI variable to the binary obesity variable, indicating whether the participant was obese.
+
+```{r Cox models T2D Males}
+
+T2D_vars=c("TEU_BaC_AgeAtRec","Ethnicity","TownsendDepInd","TEU_FaH_diab","BSM_WaistCirc","Dem_BSM_BMIcat","Dem_InPhA_WHO","TEU_evidenceHTN")
+
+HESonly_Males=HESonly_diab%>%filter(BaC_Sex=="Male")
+
+# HES only
+
+HESonly_formula <- as.formula(paste0("Surv(HESDth_T2D_time, HESDth_T2D_status)~ ", paste(T2D_vars, collapse="+")))
+
+HESonly_Cox<-coxph(HESonly_formula,data=HESonly_Males)
+
+HESonly_Cox_df<-printcoxresults(df=HESonly_Males,varlist = T2D_vars,modeloutput = HESonly_Cox,onecol = TRUE,IDcol=TRUE,forplot = TRUE)
+
+HESonly_forplot<-HESonly_Cox_df%>%
+  # Create HR (95% CI)
+  mutate(HR_CI=case_when(
+    is.na(LCI) & IDcol==Coefficient ~ NA_character_,
+    is.na(LCI) & IDcol!=Coefficient ~ "1",
+    TRUE ~ paste0(pretty_dp(HR_num,2)," ",pretty_confint(LCI, UCI, dp=2))
+  ))
+
+
+# HES + GP
+
+HESGP_Males<-HESGP_diab%>%filter(BaC_Sex=="Male")
+
+HESGP_formula <- as.formula(paste0("Surv(HESDthGP_T2D_time, HESDthGP_T2D_status)~ ", paste(T2D_vars, collapse="+")))
+
+HESGP_Cox<-coxph(HESGP_formula,data=HESGP_Males)
+
+HESGP_Cox_df<-printcoxresults(df=HESGP_Males,varlist = T2D_vars,modeloutput = HESGP_Cox,onecol = TRUE,IDcol=TRUE,forplot = TRUE)
+
+HESGP_forplot<-HESGP_Cox_df%>%
+  # Create HR (95% CI)
+  mutate(HR_CI=case_when(
+    is.na(LCI) & IDcol==Coefficient ~ NA_character_,
+    is.na(LCI) & IDcol!=Coefficient ~ "1",
+    TRUE ~ paste0(pretty_dp(HR_num,2)," ",pretty_confint(LCI, UCI, dp=2))
+  ))
+
+```
+
+```{r bootstrap RHR T2D}
+# rbind HES only and HES+GP because we need to perform stratified bootstrap
+HESonly_Males$ind="HESonly"
+HESGP_Males$ind="HES+GP"
+
+#svars=c("TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_PD","TEU_Smo_Status")
+
+HESonly_Males_comp<-HESonly_Males%>%
+  select(HESDth_T2D_status,HESDth_T2D_time,ind,all_of(T2D_vars))%>%
+  rename(TEU_T2D_status=HESDth_T2D_status,
+         TEU_T2D_time=HESDth_T2D_time)%>%
+  na.omit()
+
+HESGP_Males_comp<-HESGP_Males%>%
+  select(HESDthGP_T2D_status,HESDthGP_T2D_time,ind,all_of(T2D_vars))%>%
+  rename(TEU_T2D_status=HESDthGP_T2D_status,
+         TEU_T2D_time=HESDthGP_T2D_time)%>%
+  na.omit()
+
+
+data_Males<-rbind(HESonly_Males_comp,HESGP_Males_comp)
+```
+
+```{r,eval=FALSE}
+
+set.seed(10)
+Bootstrap_result_T2D_Males = boot(data=data_Males,
+                  statistic=RHR,
+                  stype = "i",
+                  strata = factor(data_Males$ind),
+                  R=1000,
+                  surv_outcome="Surv(TEU_T2D_time, TEU_T2D_status)",
+                  vars=T2D_vars,
+                  parallel = "snow")
+
+# save bootstrap results
+saveRDS(Bootstrap_result_T2D_Males,file.path(config$data$derived,"Bootstrap_T2D_Males.rds"))
+```
+
+
+```{r inspect bootstrap results T2D males}
+
+plot(Bootstrap_result_T2D_Males)
+
+Bootstrap_ci_T2D_Males<-lapply(1:length(Bootstrap_result_T2D_Males$t0),
+       function(i) BootCI_df(Bootstrap_result_T2D_Males, type="perc",conf=0.95,i))
+
+Bootstrap_ci_df<-as.data.frame(do.call(rbind, Bootstrap_ci_T2D_Males))
+
+```
+
+
+```{r forestplot T2D males}
+tiff(file.path(config$outputs$figures,"T2DMales_forestplot_comp.tiff"), units="in", width=10, height=13, res=300)
+
+HESvsGP_forestplot(HESonly_forplot,HESGP_forplot,Bootstrap_ci_df,clip=c(0.5,3.5),xticks = seq(0.5,3.5,0.5))
+
+dev.off()
+```
+
+
+```{r T2D males Table}
+# LHS is HES only; RHS is HES + GP
+
+T2D_males_table<-full_join(HESonly_forplot%>%select(IDcol,Coefficient,HR_CI,p),
+                    HESGP_forplot%>%select(IDcol,HR_CI,p),
+                    by="IDcol",suffix=c(".HES",".HESGP"))%>%
+  rowwise()%>%
+  mutate(Coefficient=pretty_func(Coefficient))
+
+pander(T2D_males_table%>%select(!IDcol),caption=paste0("Table 6. Results of Cox models of T2D obtained using male subgroup of HES only (N= ",HESonly_Cox$n, ") and male subgroup of HES+GP population (N= ",HESGP_Cox$n,")."))
+
+```
+
+### Females
+
+```{r Cox models T2D Females}
+# Adding gestational diabetes
+
+T2D_vars=c("TEU_BaC_AgeAtRec","Ethnicity","TownsendDepInd","TEU_FaH_diab","BSM_WaistCirc","Dem_BSM_BMIcat","Dem_InPhA_WHO","TEU_evidenceHTN","Estw_gestational")
+
+HESonly_Females=HESonly_diab%>%filter(BaC_Sex=="Female")
+
+# HES only
+
+HESonly_formula <- as.formula(paste0("Surv(HESDth_T2D_time, HESDth_T2D_status)~ ", paste(T2D_vars, collapse="+")))
+
+HESonly_Cox<-coxph(HESonly_formula,data=HESonly_Females)
+
+HESonly_Cox_df<-printcoxresults(df=HESonly_Females,varlist = T2D_vars,modeloutput = HESonly_Cox,onecol = TRUE,IDcol=TRUE,forplot = TRUE)
+
+HESonly_forplot<-HESonly_Cox_df%>%
+  # Create HR (95% CI)
+  mutate(HR_CI=case_when(
+    is.na(LCI) & IDcol==Coefficient ~ NA_character_,
+    is.na(LCI) & IDcol!=Coefficient ~ "1",
+    TRUE ~ paste0(pretty_dp(HR_num,2)," ",pretty_confint(LCI, UCI, dp=2))
+  ))
+
+
+# HES + GP
+HESGP_Females<-HESGP_diab%>%filter(BaC_Sex=="Female")
+
+HESGP_formula <- as.formula(paste0("Surv(HESDthGP_T2D_time, HESDthGP_T2D_status)~ ", paste(T2D_vars, collapse="+")))
+
+HESGP_Cox<-coxph(HESGP_formula,data=HESGP_Females)
+
+HESGP_Cox_df<-printcoxresults(df=HESGP_Females,varlist = T2D_vars,modeloutput = HESGP_Cox,onecol = TRUE,IDcol=TRUE,forplot = TRUE)
+
+HESGP_forplot<-HESGP_Cox_df%>%
+  # Create HR (95% CI)
+  mutate(HR_CI=case_when(
+    is.na(LCI) & IDcol==Coefficient ~ NA_character_,
+    is.na(LCI) & IDcol!=Coefficient ~ "1",
+    TRUE ~ paste0(pretty_dp(HR_num,2)," ",pretty_confint(LCI, UCI, dp=2))
+  ))
+
+```
+
+```{r bootstrap RHR T2D females}
+# rbind HES only and HES+GP because we need to perform stratified bootstrap
+HESonly_Females$ind="HESonly"
+HESGP_Females$ind="HES+GP"
+
+#svars=c("TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_PD","TEU_Smo_Status")
+
+HESonly_Females_comp<-HESonly_Females%>%
+  select(HESDth_T2D_status,HESDth_T2D_time,ind,all_of(T2D_vars))%>%
+  rename(TEU_T2D_status=HESDth_T2D_status,
+         TEU_T2D_time=HESDth_T2D_time)%>%
+  na.omit()
+
+HESGP_Females_comp<-HESGP_Females%>%
+  select(HESDthGP_T2D_status,HESDthGP_T2D_time,ind,all_of(T2D_vars))%>%
+  rename(TEU_T2D_status=HESDthGP_T2D_status,
+         TEU_T2D_time=HESDthGP_T2D_time)%>%
+  na.omit()
+
+
+data_Females<-rbind(HESonly_Females_comp,HESGP_Females_comp)
+```
+
+```{r,eval=FALSE}
+
+set.seed(10)
+Bootstrap_result_T2D_Females = boot(data=data_Females,
+                  statistic=RHR,
+                  stype = "i",
+                  strata = factor(data_Females$ind),
+                  R=1000,
+                  surv_outcome="Surv(TEU_T2D_time, TEU_T2D_status)",
+                  vars=T2D_vars,
+                  parallel = "snow")
+
+# save bootstrap results
+saveRDS(Bootstrap_result_T2D_Females,file.path(config$data$derived,"Bootstrap_T2D_Females.rds"))
+```
+
+
+```{r inspect bootstrap results T2D females}
+
+plot(Bootstrap_result_T2D_Females)
+
+Bootstrap_ci_T2D_Females<-lapply(1:length(Bootstrap_result_T2D_Females$t0),
+       function(i) BootCI_df(Bootstrap_result_T2D_Females, type="perc",conf=0.95,i))
+
+Bootstrap_ci_df<-as.data.frame(do.call(rbind, Bootstrap_ci_T2D_Females))
+
+```
+
+
+```{r forestplot T2D females}
+tiff(file.path(config$outputs$figures,"T2DFemales_forestplot_comp.tiff"), units="in", width=10, height=14, res=300)
+
+HESvsGP_forestplot(HESonly_forplot,HESGP_forplot,Bootstrap_ci_df,clip=c(1,8),xticks = seq(1,8,1))
+
+dev.off()
+```
+
+
+```{r T2D females Table}
+# LHS is HES only; RHS is HES + GP
+
+T2D_females_table<-full_join(HESonly_forplot%>%select(IDcol,Coefficient,HR_CI,p),
+                    HESGP_forplot%>%select(IDcol,HR_CI,p),
+                    by="IDcol",suffix=c(".HES",".HESGP"))%>%
+  rowwise()%>%
+  mutate(Coefficient=pretty_func(Coefficient))
+
+pander(T2D_females_table%>%select(!IDcol),caption=paste0("Table 7. Results of Cox models of T2D obtained using female subgroup of HES only (N= ",HESonly_Cox$n, ") and female subgroup of HES+GP population (N= ",HESGP_Cox$n,")."))
+
+```
+
+
+# Dementia 
+
+Among HES only population for dementia (N=`r nrow(HESonly_dem)`), there were `r sum(HESonly_dem$HESDth_Dem_status)` incident dementia cases over a median follow-up of `r pretty_dp(median(HESonly_dem$HESDth_Dem_time),1)` years (IQR=`r pretty_confint(quantile(HESonly_dem$HESDth_Dem_time, prob=c(.25)),quantile(HESonly_dem$HESDth_Dem_time, prob=c(.75)),dp=2)`).
+
+
+Among HES+GP population for dementia (N=`r nrow(HESGP_dem)`), there were `r sum(HESGP_dem$HESDthGP_Dem_status)` incident dementia cases over a median follow-up of `r pretty_dp(median(HESGP_dem$HESDthGP_Dem_time),1)` years (IQR=`r pretty_confint(quantile(HESGP_dem$HESDthGP_Dem_time, prob=c(.25)),quantile(HESGP_dem$HESDthGP_Dem_time, prob=c(.75)),dp=2)`).
+
+
+## Baseline characteristics
+
+```{r,results='asis'}
+
+vars=c("TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_dem","TEU_APOE_e4_carrier","Dem_Edu_Age","Dem_Edu_Qual","TEU_Alc_Freq","Dem_Alc_WeeklyCat","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","TEU_evidenceHTN","Dem_SocialIso","Dem_BSM_BMIcat","Dem_AirPollution")
+
+tmp <- HESonly_dem[,vars] %>%
+  mutate_at(c("TEU_ethnicgrp","Dem_Edu_Age","Dem_Edu_Qual","TEU_Alc_Freq","Dem_Alc_WeeklyCat","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","Dem_SocialIso","Dem_BSM_BMIcat","Dem_AirPollution"),~fct_na_value_to_level(., "Missing"))
+
+# Check the characteristics of RFs
+table<-tableby(~.,data=tmp,control=my_controls)
+
+sumtab=summary(table,labelTranslations = pretty_names,title=paste0('Table 5a. Descriptive statistics of risk factors for dementia in HES only dementia population.'))
+
+sumtab
+
+```
+
+```{r,results='asis'}
+
+tmp <- HESGP_dem[,vars] %>%
+  mutate_at(c("TEU_ethnicgrp","Dem_Edu_Age","Dem_Edu_Qual","TEU_Alc_Freq","Dem_Alc_WeeklyCat","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","Dem_SocialIso","Dem_BSM_BMIcat","Dem_AirPollution"),~fct_na_value_to_level(., "Missing"))
+
+# Check the characteristics of RFs
+table<-tableby(~.,data=tmp,control=my_controls)
+
+sumtab=summary(table,labelTranslations = pretty_names,title=paste0('Table 5b. Descriptive statistics of risk factors for dementia in HES+GP dementia population.'))
+
+sumtab
+
+```
+
+Missingness: 
+
+```{r}
+
+Dem_miss<-HESGP_dem[,vars]%>%miss_var_summary()%>%filter(n_miss!=0)%>%
+  rowwise%>%
+  mutate(variable=pretty_func(variable))
+
+pander(Dem_miss,caption="Table 8. Missingness of covariates of dementia in HES+GP population.")
+```
+
+We observed high missing percentage of excessive alcohol intake variable. We could perform multiple imputation but for now, we could just alcohol intake frequency instead due to its much lower missingness. Note that physical inacitivity also had high missing percentage. We might want to perform multiple imputation in main analyses.
+
+```{r}
+
+Dem_vars=c("TEU_BaC_AgeAtRec","Ethnicity","BaC_Sex","TownsendDepInd","TEU_FaH_dem","TEU_APOE_e4_carrier","Dem_Edu_Qual","TEU_Alc_Freq","Dem_InPhA_WHO","TEU_Smo_Status","Dem_Depression","Dem_diab","Dem_HearingLoss","TEU_evidenceHTN","Dem_SocialIso","Dem_BSM_BMIcat")
+
+```
+
+
+At this stage, we will conduct a complete case analysis.We would remove `r comp_remove_perc(HESonly_dem[,Dem_vars])`% of participants in HES only population and `r comp_remove_perc(HESGP_dem[,Dem_vars])` % in HES + GP population.
+
+
+## Cox models
+
+We fit the following model, including risk factors for dementia, in two separate population, "HES only" and "HES + GP" populations. 
+
+Dementia ~ age + sex + self-reported ethnicity + Townsend score + FaH of dementia/Alz + APOE e4 carrier + Education + Alcohol + Physical inacitivity + Smoking + Depression + Diabetes + Hearing loss + Hypertension + Social isolation + Obesity + Air pollution.
+
+Note: Due to the small number in Mixed ethnic group, the model did not converge. Hence we changed ethnicity variable to a binary ethnicity variable, indicating whether the participant self-reported as White or non-White ethnicity.
+
+
+```{r Temp change level names for foresplot}
+# So stupid... need to have unique level names for forestplot to work...
+levels(HESonly_dem$TEU_Alc_Freq)[1]<-"Never "
+levels(HESonly_dem$Dem_Depression)<-c("No ","Yes ")
+levels(HESonly_dem$Dem_diab)<-c("No  ","Yes  ")
+levels(HESonly_dem$Dem_Depression)<-c("No   ","Yes   ")
+levels(HESonly_dem$Dem_HearingLoss)<-c("No    ","Yes    ")
+levels(HESonly_dem$TEU_evidenceHTN)<-c("No     ","Yes     ")
+levels(HESonly_dem$Dem_SocialIso)<-c("No      ","Yes      ")
+
+
+levels(HESGP_dem$TEU_Alc_Freq)[1]<-"Never "
+levels(HESGP_dem$Dem_Depression)<-c("No ","Yes ")
+levels(HESGP_dem$Dem_diab)<-c("No  ","Yes  ")
+levels(HESGP_dem$Dem_Depression)<-c("No   ","Yes   ")
+levels(HESGP_dem$Dem_HearingLoss)<-c("No    ","Yes    ")
+levels(HESGP_dem$TEU_evidenceHTN)<-c("No     ","Yes     ")
+levels(HESGP_dem$Dem_SocialIso)<-c("No      ","Yes      ")
+
+```
+
+```{r Cox models Dem}
+
+# HES only
+
+HESonly_formula <- as.formula(paste0("Surv(HESDth_Dem_time, HESDth_Dem_status)~ ", paste(Dem_vars, collapse="+")))
+
+HESonly_Cox<-coxph(HESonly_formula,data=HESonly_dem)
+
+HESonly_Cox_df<-printcoxresults(df=HESonly_dem,varlist = Dem_vars,modeloutput = HESonly_Cox,onecol = TRUE,IDcol=TRUE,forplot = TRUE)
+
+HESonly_forplot<-HESonly_Cox_df%>%
+  # Create HR (95% CI)
+  mutate(HR_CI=case_when(
+    is.na(LCI) & IDcol==Coefficient ~ NA_character_,
+    is.na(LCI) & IDcol!=Coefficient ~ "1",
+    TRUE ~ paste0(pretty_dp(HR_num,2)," ",pretty_confint(LCI, UCI, dp=2))
+  ))
+
+
+# HES + GP
+
+HESGP_formula <- as.formula(paste0("Surv(HESDthGP_Dem_time, HESDthGP_Dem_status)~ ", paste(Dem_vars, collapse="+")))
+
+HESGP_Cox<-coxph(HESGP_formula,data=HESGP_dem)
+
+HESGP_Cox_df<-printcoxresults(df=HESGP_dem,varlist = Dem_vars,modeloutput = HESGP_Cox,onecol = TRUE,IDcol=TRUE,forplot = TRUE)
+
+HESGP_forplot<-HESGP_Cox_df%>%
+  # Create HR (95% CI)
+  mutate(HR_CI=case_when(
+    is.na(LCI) & IDcol==Coefficient ~ NA_character_,
+    is.na(LCI) & IDcol!=Coefficient ~ "1",
+    TRUE ~ paste0(pretty_dp(HR_num,2)," ",pretty_confint(LCI, UCI, dp=2))
+  ))
+
+```
+
+```{r bootstrap RHR Dem}
+# rbind HES only and HES+GP because we need to perform stratified bootstrap
+HESonly_dem$ind="HESonly"
+HESGP_dem$ind="HES+GP"
+
+#svars=c("TEU_BaC_AgeAtRec","TEU_ethnicgrp","BaC_Sex","TownsendDepInd","TEU_FaH_PD","TEU_Smo_Status")
+
+HESonly_dem_comp<-HESonly_dem%>%
+  select(HESDth_Dem_status,HESDth_Dem_time,ind,all_of(Dem_vars))%>%
+  rename(TEU_Dem_status=HESDth_Dem_status,
+         TEU_Dem_time=HESDth_Dem_time)%>%
+  na.omit()
+
+HESGP_dem_comp<-HESGP_dem%>%
+  select(HESDthGP_Dem_status,HESDthGP_Dem_time,ind,all_of(Dem_vars))%>%
+  rename(TEU_Dem_status=HESDthGP_Dem_status,
+         TEU_Dem_time=HESDthGP_Dem_time)%>%
+  na.omit()
+
+
+data_dem<-rbind(HESonly_dem_comp,HESGP_dem_comp)
+```
+
+```{r,eval=FALSE}
+
+set.seed(10)
+
+Bootstrap_result_dem = boot(data=data_dem,
+                  statistic=RHR,
+                  stype = "i",
+                  strata = factor(data_dem$ind),
+                  R=1000,
+                  vars=Dem_vars,
+                  surv_outcome="Surv(TEU_Dem_time, TEU_Dem_status)",
+                  parallel = "snow")
+
+# save bootstrap results
+saveRDS(Bootstrap_result_dem,file.path(config$data$derived,"Bootstrap_dem.rds"))
+```
+
+
+```{r inspect bootstrap results dem}
+
+plot(Bootstrap_result_dem)
+
+Bootstrap_ci_dem<-lapply(1:length(Bootstrap_result_dem$t0),
+       function(i) BootCI_df(Bootstrap_result_dem, type="perc",conf=0.95,i))
+
+Bootstrap_ci_df<-as.data.frame(do.call(rbind, Bootstrap_ci_dem))
+
+```
+
+```{r forestplot dem}
+tiff(file.path(config$outputs$figures,"Dem_forestplot_comp.tiff"), units="in", width=13, height=28, res=300)
+
+
+HESvsGP_forestplot(HESonly_forplot,HESGP_forplot,Bootstrap_ci_df,clip=c(0,4),xticks = seq(0,4,0.5))
+
+dev.off()
+```
+
+
+```{r,eval=FALSE}
+# Split in half for now for display
+HESvsGP_forestplot(HESonly_forplot[1:24,],HESGP_forplot[1:24,],clip=c(0.2,7),xticks = seq(0.2,7,1))
+
+
+HESvsGP_forestplot(HESonly_forplot[25:54,],HESGP_forplot[25:54,],clip=c(0.2,7),xticks = seq(0.2,7,1))
+
+```
+
+
+```{r dem Table}
+# LHS is HES only; RHS is HES + GP
+
+Dem_table<-full_join(HESonly_forplot%>%select(IDcol,Coefficient,HR_CI,p),
+                    HESGP_forplot%>%select(IDcol,HR_CI,p),
+                    by="IDcol",suffix=c(".HES",".HESGP"))%>%
+  rowwise()%>%
+  mutate(Coefficient=pretty_func(Coefficient))
+
+pander(Dem_table%>%select(!IDcol),caption=paste0("Table 9. Results of Cox models of dementia obtained using HES only (N= ",HESonly_Cox$n, ") and HES+GP population (N= ",HESGP_Cox$n,")."))
+
+```
+
+

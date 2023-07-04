@@ -1,0 +1,334 @@
+---
+title: "HES vs GP Venn Diagram"
+author: "Xiaonan Liu"
+date: "2023-02-14"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include=TRUE, echo=FALSE)
+
+library(yaml)
+library(here)
+library(tidyr)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(magrittr)
+library(svglite)
+library(rsvg)
+library(png)
+library(dplyr)
+library(Rcpp)
+library(etm)
+library(readr)
+library(tibble)
+library(Publish)
+library(rsample)
+library(eulerr)
+library(ggplot2)
+# Specify the markdown format for knitr tables, otherwise they're not compatible with kableExtra
+#options(knitr.kable.NA='', knitr.table.format = "html")
+#options(kableExtra.auto_format = FALSE)
+# Set the root directory to the project directory (otherwise knitr works in the directory of the Rmd file by default)
+
+knitr::opts_knit$set(root.dir = here::here())
+
+# Load the project config file for filepaths etc
+config = yaml.load_file(here::here("./config.yml"))
+source(here::here(config$functions))
+
+Diab_data<-readRDS(here::here(file.path(config$data$derived,"HESGP_diab.rds")))
+
+PD_data<-readRDS(here::here(file.path(config$data$derived,"HESGP_PD.rds")))
+
+Dem_data<-readRDS(here::here(file.path(config$data$derived,"HESGP_dem.rds")))
+```
+
+
+# T2D
+
+```{r T2D,dpi=300,out.width = "60%",out.height = "60%"}
+
+Diab_list<-HESvsGP(data=Diab_data,outcome_label = "T2D",GP_censoring = "T2D_censordate",
+                   HESDth_censoring = "HESDth_T2DM_censordate",GP_eventdate = "PC_T2D_eventdate",HESDth_eventdate = "HESDth_T2D_eventdate")
+
+# Venn digram
+Diab_list[1]
+
+ggplot() + aes(Diab_list[[2]])+ 
+  geom_histogram(binwidth=1, colour="black", fill="dark grey", boundary = 0)+
+  labs(title=paste0("HES/Dth dx date-GP dx date among ",length(Diab_list[[2]])," \n overlaping incident T2D cases before GP censoring"),x="Time difference in years")+
+  xlim(-10,15)+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+
+Diab_list[3]
+
+ggplot() + aes(na.omit(Diab_list[[4]]))+ 
+  geom_histogram(binwidth=1, colour="black", fill="dark grey", boundary = 0)+
+  labs(title=paste0("HES/Dth dx date-GP dx date among ",length(na.omit(Diab_list[[4]]))," \n overlaping incident T2D cases during full follow-up"),x="Time difference in years")+
+  xlim(-10,15)+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+
+
+```
+
+If censor at GP: The median of time difference is `r pretty_dp(median(Diab_list[[2]]),2)` years (IQR= `r pretty_confint(quantile(Diab_list[[2]], prob=.25),quantile(Diab_list[[2]], prob=.75),dp=2)`) and the mean is `r pretty_dp(mean(Diab_list[[2]]),2)` years (SD = `r pretty_dp(sd(Diab_list[[2]]),2)`).
+
+If censor at HES/Dth (i.e. full follow-up): The median of time difference is `r pretty_dp(median(na.omit(Diab_list[[4]])),2)` years (IQR=`r pretty_confint(quantile(na.omit(Diab_list[[4]]), prob=.25),quantile(na.omit(Diab_list[[4]]), prob=.75),dp=2)`) and the mean is `r pretty_dp(mean(na.omit(Diab_list[[4]])),2)` years (SD = `r pretty_dp(sd(na.omit(Diab_list[[4]])),2)`).
+
+```{r cumulative prob T2D,dpi=300,out.width = "60%",out.height = "60%"}
+
+outcome_label="T2D"
+
+timediff_cat<-factor(cut(Diab_list[[4]],breaks = c(-100,seq(0,10,by=1),200), right = TRUE),labels=c(seq(0,10,by=1),">10"))
+
+#Tabulate and turn into data.frame
+tab <- as.data.frame(table(timediff_cat))
+#Add cumFreq and proportions
+tab <- transform(tab, cumFreq = cumsum(Freq))%>%
+  mutate(cumProb=cumFreq/length(Diab_list[[4]]))
+
+ggplot(data=tab, aes(x=timediff_cat, y=cumProb, group=1)) +
+  geom_line()+
+  geom_point()+ 
+  scale_y_continuous(labels = scales::percent, limits=c(0,1), breaks = seq(0, 1, by = 0.2))+
+  labs(title=paste0("Cumulative probability of HES/Dth dx date-GP dx date \namong ",length(Diab_list[[4]])," participants who had incident GP dx of ",outcome_label),x=paste0("Years since first record of ",outcome_label," in GP"),y=paste0("Cumulative probability of first hospital \n admission with ",outcome_label),caption = "Time difference was computed during the full follow-up")+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+
+```
+
+Note that the cumulative probability plot does not start from 0% because there were people who had HES dx of T2D before GP dx. Each point shows $\frac{\# (HES dx-GP dx \le year)}{\# GP dx}$.
+
+
+# Parkinson's Disease
+
+```{r PD,dpi=300,out.width = "60%",out.height = "60%"}
+
+PD_list<-HESvsGP(data=PD_data,outcome_label = "PD",GP_censoring = "PD_censordate",
+                   HESDth_censoring = "HESDth_PD_censordate",GP_eventdate = "PC_PD_eventdate",HESDth_eventdate = "HESDth_PD_eventdate")
+
+# Venn digram
+PD_list[1]
+
+ggplot() + aes(PD_list[[2]])+ 
+  geom_histogram(binwidth=1, colour="black", fill="dark grey", boundary = 0)+
+  labs(title=paste0("HES/Dth dx date-GP dx date among ",length(PD_list[[2]])," \n overlaping incident PD cases before GP censoring"),x="Time difference in years")+
+  xlim(-10,15)+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+
+PD_list[3]
+
+ggplot() + aes(na.omit(PD_list[[4]]))+ 
+  geom_histogram(binwidth=1, colour="black", fill="dark grey", boundary = 0)+
+  labs(title=paste0("HES/Dth dx date-GP dx date among ",length(na.omit(PD_list[[4]]))," \n overlaping incident PD cases during full follow-up"),x="Time difference in years")+
+  xlim(-10,15)+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+```
+
+If censor at GP: The median of time difference is `r pretty_dp(median(PD_list[[2]]),2)` years (IQR=`r pretty_confint(quantile(PD_list[[2]], prob=.25),quantile(PD_list[[2]], prob=.75),dp=2)`) and the mean is `r pretty_dp(mean(PD_list[[2]]),2)` years (SD=`r pretty_dp(sd(PD_list[[2]]),2)`).
+
+If censor at HES/Dth (i.e. full follow-up): The median of time difference is `r pretty_dp(median(na.omit(PD_list[[4]])),2)` years (IQR=`r pretty_confint(quantile(na.omit(PD_list[[4]]), prob=.25),quantile(na.omit(PD_list[[4]]), prob=.75),dp=2)`) and the mean is `r pretty_dp(mean(na.omit(PD_list[[4]])),2)` years (SD = `r pretty_dp(sd(na.omit(PD_list[[4]])),2)`).
+
+```{r cumulative prob PD,dpi=300,out.width = "60%",out.height = "60%"}
+
+outcome_label="PD"
+
+timediff_cat<-factor(cut(PD_list[[4]],breaks = c(-100,seq(0,10,by=1),200), right = TRUE),labels=c(seq(0,10,by=1),">10"))
+
+#Tabulate and turn into data.frame
+tab <- as.data.frame(table(timediff_cat))
+#Add cumFreq and proportions
+tab <- transform(tab, cumFreq = cumsum(Freq))%>%
+  mutate(cumProb=cumFreq/length(PD_list[[4]]))
+
+ggplot(data=tab, aes(x=timediff_cat, y=cumProb, group=1)) +
+  geom_line()+
+  geom_point()+ 
+  scale_y_continuous(labels = scales::percent, limits=c(0,1), breaks = seq(0, 1, by = 0.2))+
+  labs(title=paste0("Cumulative probability of HES/Dth dx date-GP dx date \namong ",length(PD_list[[4]])," participants who had incident GP dx of ",outcome_label),
+       x=paste0("Years since first record of ",outcome_label," in GP"),
+       y=paste0("Cumulative probability of first hospital \n admission with ",outcome_label),
+       caption = "Time difference was computed during the full follow-up")+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+
+```
+
+# Dementia
+
+```{r Dementia,dpi=300,out.width = "60%",out.height = "60%"}
+
+Dem_list<-HESvsGP(data=Dem_data,outcome_label = "dementia",GP_censoring = "Dem_censordate",
+                   HESDth_censoring = "HESDth_Dem_censordate",GP_eventdate = "PC_Dem_eventdate",HESDth_eventdate = "HESDth_Dem_eventdate")
+
+# Venn digram
+Dem_list[1]
+
+ggplot() + aes(Dem_list[[2]])+ 
+  geom_histogram(binwidth=1, colour="black", fill="dark grey", boundary = 0)+
+  labs(title=paste0("HES/Dth dx date-GP dx date among overlaping \n ",length(Dem_list[[2]])," incident dementia cases before GP censoring"),x="Time difference in years")+
+  xlim(-5,15)+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+
+Dem_list[3]
+
+ggplot() + aes(na.omit(Dem_list[[4]]))+ 
+  geom_histogram(binwidth=1, colour="black", fill="dark grey", boundary = 0)+
+  labs(title=paste0("HES/Dth dx date-GP dx date among overlaping \n ",length(na.omit(Dem_list[[4]]))," incident dementia cases during full follow-up"),x="Time difference in years")+
+  xlim(-5,15)+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+
+```
+
+If censor at GP: The median of time difference is `r pretty_dp(median(Dem_list[[2]]),2)` years (IQR=`r pretty_confint(quantile(Dem_list[[2]], prob=c(.25)),quantile(Dem_list[[2]], prob=c(.75)),dp=2)`) and the mean is `r pretty_dp(mean(Dem_list[[2]]),2)` years (SD = `r pretty_dp(sd(Dem_list[[2]]),2)`).
+
+If censor at HES/Dth (i.e. full follow-up): The median of time difference is `r pretty_dp(median(na.omit(Dem_list[[4]])),2)` years (IQR=`r pretty_confint(quantile(na.omit(Dem_list[[4]]), prob=.25),quantile(na.omit(Dem_list[[4]]), prob=.75),dp=2)`) and the mean is `r pretty_dp(mean(na.omit(Dem_list[[4]])),2)` years (SD = `r pretty_dp(sd(na.omit(Dem_list[[4]])),2)`).
+
+```{r cumulative prob Dem,dpi=300,out.width = "60%",out.height = "60%"}
+
+outcome_label="dementia"
+
+timediff_cat<-factor(cut(Dem_list[[4]],breaks = c(-100,seq(0,10,by=1),200), right = TRUE),labels=c(seq(0,10,by=1),">10"))
+
+#Tabulate and turn into data.frame
+tab <- as.data.frame(table(timediff_cat))
+#Add cumFreq and proportions
+tab <- transform(tab, cumFreq = cumsum(Freq))%>%
+  mutate(cumProb=cumFreq/length(Dem_list[[4]]))
+
+ggplot(data=tab, aes(x=timediff_cat, y=cumProb, group=1)) +
+  geom_line()+
+  geom_point()+ 
+  scale_y_continuous(labels = scales::percent, limits=c(0,1), breaks = seq(0, 1, by = 0.2))+
+  labs(title=paste0("Cumulative probability of HES/Dth dx date-GP dx date \namong ",length(Dem_list[[4]])," participants who had incident GP dx of \n",outcome_label),
+       x=paste0("Years since first record of ",outcome_label," in GP"),
+       y=paste0("Cumulative probability of first hospital \n admission with ",outcome_label),
+       caption = "Time difference was computed during the full follow-up")+
+  theme(axis.text.x=element_text(size=15),axis.text.y=element_text(size=15),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.title = element_text(size=15,face="bold"))
+
+```
+
+
+# Manual checking
+
+```{r,eval=FALSE}
+# cross check
+
+Diab_data%>%filter(GP_T2DM_censordate>HESDth_T2DM_censordate)%>%nrow()
+
+```
+
+```{r,eval=FALSE}
+# Q1: How many HES/Dth cases captured between baseline and end of PC
+baseline_endPC=Diab_data%>%filter(!is.na(HESDth_T2D_eventdate) & HESDth_T2D_eventdate<=Admin_PC_CensorDate)%>%nrow()
+
+baseline_endPC
+
+# Q2: Within baseline and end of PC, how many cases had both HES/Dth and PC? 
+
+overlap_data=Diab_data%>%filter(!is.na(HESDth_T2D_eventdate) & HESDth_T2D_eventdate<=Admin_PC_CensorDate &
+                !is.na(PC_T2D_eventdate) & PC_T2D_eventdate<=Admin_PC_CensorDate)
+
+nrow(overlap_data)
+
+# percentage
+nrow(overlap_data)/baseline_endPC
+```
+```{r Venn diagram,eval=FALSE}
+
+fit <- euler(c("HES/Dth" = baseline_endPC, "GP" = nrow(Extra_GP)+nrow(overlap_data), "HES/Dth&GP" = nrow(overlap_data)))
+
+venn<-plot(fit,quantities = TRUE,fills = "steelblue3")
+
+```
+
+
+```{r Histogram,eval=FALSE}
+# Create histogram of differences in dx time
+diffs<-as.numeric((overlap_data$HESDth_T2D_eventdate-overlap_data$PC_T2D_eventdate)/365.25)
+
+# Plot histogram
+hist(diffs,main = paste0("HES/Dth dx date-PC dx date among overlaping ",nrow(overlap_data) ," incident T2D cases"),
+     xlab = "Time difference in years")
+```
+
+
+```{r,eval=FALSE}
+# Q3: How many extra PC cases not captured in HES/Dth till end of PC?
+
+Extra_GP<-Diab_data%>%filter(!is.na(PC_T2D_eventdate) & PC_T2D_eventdate<=Admin_PC_CensorDate &
+                !ID%in%overlap_data$ID)
+
+nrow(Extra_GP)
+
+# Total GP cases
+nrow(Extra_GP)+nrow(overlap_data)
+
+# Q4: How many of the extra PC cases ended up in HES/Dth at a later point
+Extra_GP%>%filter(!is.na(HESDth_T2D_eventdate) &
+                    HESDth_T2D_eventdate>Admin_PC_CensorDate &
+                    HESDth_T2D_eventdate<=HESDth_T2DM_censordate)%>%nrow()
+
+```
+
+
+```{r cumulative prob check, eval=FALSE}
+outcome_label = "T2D";GP_censoring = "T2D_censordate";
+HESDth_censoring = "HESDth_T2DM_censordate";GP_eventdate = "PC_T2D_eventdate";
+HESDth_eventdate = "HESDth_T2D_eventdate"
+# Rename columns 
+data<-Diab_data%>%
+    rename(GP_censoring=!!sym(GP_censoring),
+           HESDth_censoring=!!sym(HESDth_censoring),
+           GP_eventdate=!!sym(GP_eventdate),
+           HESDth_eventdate=!!sym(HESDth_eventdate))
+
+
+data<-data%>%
+  # filter people with a GP dx
+  filter(!is.na(GP_eventdate) & GP_eventdate<=GP_censoring)%>%
+  # create time diff in years HES dx - GP dx for those with a HES dx before full fu
+  mutate(timediff=ifelse(!is.na(HESDth_eventdate) & HESDth_eventdate<=HESDth_censoring,(HESDth_eventdate-GP_eventdate)/365.25,NA))%>%
+  # categorise timediff in buckets e.g. (0,1]
+  mutate(timediff_cat=factor(cut(timediff,breaks = c(-100,seq(0,14,by=1)), right = TRUE),labels=seq(0,14,by=1)))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
